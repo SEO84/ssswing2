@@ -77,7 +77,17 @@ def detect_swing_key_frames(video_path: str):
         return None, None, None
 
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     cap.release()
+    
+    # FPS 기반 시간 제약 강화
+    MIN_TOP_TIME_SEC = 0.15  # 최소 top 시간 (초)
+    MIN_FINISH_TIME_SEC = 0.5  # 최소 finish 시간 (초)
+    MAX_FINISH_TIME_SEC = 2.0  # 최대 finish 시간 (초)
+    
+    MIN_TOP_FRAMES = max(5, int(MIN_TOP_TIME_SEC * fps))
+    MIN_FINISH_FRAMES = max(15, int(MIN_FINISH_TIME_SEC * fps))
+    MAX_FINISH_FRAMES = int(MAX_FINISH_TIME_SEC * fps)
 
     # 1) 웨글 종료/스윙 시작(웨글 기준) 추정
     waggle_end = detect_waggle_and_swing_start(video_path)
@@ -141,8 +151,8 @@ def detect_swing_key_frames(video_path: str):
     except StopIteration:
         start_pos = 0
 
-    # top: 속도 0 교차점 + 기하학적 극값 보조
-    MIN_TOP_FRAMES = 10
+    # top: 속도 0 교차점 + 기하학적 극값 보조 (FPS 기반)
+    MIN_TOP_FRAMES = max(5, int(0.15 * fps))  # 0.15초를 프레임으로 변환
     x_seg = np.asarray(hand_x[start_pos:], dtype=float)
     y_seg = np.asarray(hand_y[start_pos:], dtype=float)
     z_seg = np.asarray(hand_z[start_pos:], dtype=float) if hand_z else np.zeros_like(x_seg)
@@ -294,7 +304,8 @@ def detect_swing_key_frames_from(video_path: str, start_abs: int):
     except StopIteration:
         start_pos = 0
 
-    MIN_TOP_FRAMES = 10
+    # FPS 기반 MIN_TOP_FRAMES 사용
+    MIN_TOP_FRAMES = max(5, int(0.15 * fps))  # 0.15초를 프레임으로 변환
     x_seg = np.asarray(hand_x[start_pos:], dtype=float)
     y_seg = np.asarray(hand_y[start_pos:], dtype=float)
     if len(x_seg) >= 2:
@@ -303,7 +314,18 @@ def detect_swing_key_frames_from(video_path: str, start_abs: int):
     else:
         vx = np.zeros_like(x_seg)
         vy = np.zeros_like(y_seg)
-    vx_s, vy_s = _smooth(vx, 5), _smooth(vy, 5)
+    # 간단한 이동평균으로 스무딩
+    def simple_smooth(arr, window):
+        if len(arr) < window:
+            return arr
+        result = np.zeros_like(arr)
+        for i in range(len(arr)):
+            start = max(0, i - window // 2)
+            end = min(len(arr), i + window // 2 + 1)
+            result[i] = np.mean(arr[start:end])
+        return result
+    
+    vx_s, vy_s = simple_smooth(vx, 5), simple_smooth(vy, 5)
     if camera_view == 'front':
         rel0 = int(np.argmin(y_seg)) if y_seg.size else 0
         zero = rel0
@@ -347,7 +369,7 @@ def detect_swing_key_frames_from(video_path: str, start_abs: int):
 
 def detect_swing_key_times(video_path: str, slow_factor: float = 2.0):
     """
-    시간 도메인(초)에서 키 타임을 검출하는 함수 (속도 기반, 강건)
+    시간 도메인(초)에서 키 타임을 검출하는 함수 (간소화된 버전)
     
     Args:
         video_path: 비디오 파일 경로
@@ -359,184 +381,30 @@ def detect_swing_key_times(video_path: str, slow_factor: float = 2.0):
             - top_s: 최고점 시간 (초)
             - finish_s: 종료 시간 (초)
             - waggle_end_s: 웨글 종료 시간 (초)
-            
-    특징:
-        - 프레임 좌표 시퀀스를 시간축으로 보간해 slow_factor 배로 초해상도 업샘플링
-        - top: front는 y 최소 부근의 vy=0 교차점, side는 |x-x0| 최대 부근의 vx=0 교차점
-        - finish: top 이후 속도 크기(|v|)의 이동평균이 임계값 이하로 N샘플 이상 유지되는 최초 시점
     """
     # 1) 기존 어드레스/웨글 기반 시작 프레임 계산
-    start_rel, top_rel_dummy, finish_rel_dummy, waggle_abs = detect_swing_key_frames(video_path)
+    start_rel, top_rel, finish_rel, waggle_abs = detect_swing_key_frames(video_path)
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     cap.release()
 
     # 시작 시간을 초 단위로 변환
     start_time = float(waggle_abs) / float(fps)
-
-    # 2) 손목 궤적 추출 (프레임 단위)
-    mp_p = mp_pose
-    hand_x, hand_y, frame_idx = [], [], []
-    camera_view = None
     
-    cap = cv2.VideoCapture(video_path)
-    # 최적화된 MediaPipe 설정 (속도 우선)
-    with mp_p.Pose(
-        static_image_mode=False,
-        model_complexity=1,  # 2에서 1로 변경 (속도 향상)
-        smooth_landmarks=True,
-        enable_segmentation=False,
-        min_detection_confidence=0.6,  # 0.5에서 0.6으로 증가 (정확도 향상)
-        min_tracking_confidence=0.6    # 0.5에서 0.6으로 증가 (정확도 향상)
-    ) as pose:
-        fi = 0
-        # 프레임 샘플링으로 속도 향상 (매 2프레임마다 처리)
-        sample_rate = 2
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # 프레임 샘플링 적용
-            if fi % sample_rate == 0:
-                # BGR을 RGB로 변환
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                # 포즈 랜드마크 검출
-                result = pose.process(rgb)
-                if result.pose_landmarks:
-                    # 카메라 시점 감지
-                    if camera_view is None:
-                        camera_view = detect_camera_view(result.pose_landmarks)
-                    # 오른손목 랜드마크 추출
-                    rw = result.pose_landmarks.landmark[mp_p.PoseLandmark.RIGHT_WRIST]
-                    # 좌표 저장
-                    hand_x.append(rw.x)
-                    hand_y.append(rw.y)
-                    frame_idx.append(fi)
-            fi += 1
-    cap.release()
-
-    # 충분한 데이터가 없는 경우 기본값 반환 (초 단위)
-    if not frame_idx:
-        return start_time, start_time + 0.5, min(start_time + 1.25, start_time + len(frame_idx)/max(fps,1.0)), start_time
-
-    # 프레임 인덱스를 시간으로 변환
-    times = np.array(frame_idx, dtype=float) / float(fps)
-    hand_x = np.asarray(hand_x, dtype=float)
-    hand_y = np.asarray(hand_y, dtype=float)
-
-    # 3) start 이후 구간에서 시간축 보간(슬로우 효과)
-    try:
-        st_pos = int(np.searchsorted(times, start_time, side='left'))
-    except Exception:
-        st_pos = 0
-    
-    # 시작점 이후의 시간 세그먼트 추출
-    t_seg = times[st_pos:]
-    if t_seg.size == 0:
-        t_seg = times
-        st_pos = 0
-    
-    # 타임 스텝 계산 (슬로우 팩터 적용)
-    if len(t_seg) >= 2:
-        dt = np.median(np.diff(t_seg)) / max(slow_factor, 1.0)
+    # detect_swing_key_frames에서 이미 계산된 상대 프레임을 사용
+    if top_rel is None or finish_rel is None:
+        # 기본값 사용
+        top_time = start_time + 0.5
+        finish_time = start_time + 1.0
+        print(f"[Key-Times] Using default values - top_rel: {top_rel}, finish_rel: {finish_rel}")
     else:
-        dt = (1.0 / fps) / max(slow_factor, 1.0)
+        # 상대 프레임을 절대 프레임으로 변환 후 초 단위로 변환
+        top_abs = waggle_abs + top_rel
+        finish_abs = waggle_abs + finish_rel
+        top_time = float(top_abs) / float(fps)
+        finish_time = float(finish_abs) / float(fps)
+        print(f"[Key-Times] Calculated times - start: {start_time:.2f}s, top: {top_time:.2f}s, finish: {finish_time:.2f}s")
     
-    # 고해상도 시간축 생성
-    t_high = np.arange(t_seg[0], times[-1] + 1e-9, dt)
-    x_seg = hand_x[st_pos:]
-    y_seg = hand_y[st_pos:]
-    
-    # 선형 보간으로 고해상도 좌표 생성
-    x_high = np.interp(t_high, t_seg, x_seg)
-    y_high = np.interp(t_high, t_seg, y_seg)
-
-    # 파생량(속도) 계산 + 스무딩(간단한 이동평균)
-    if t_high.size >= 2:
-        vx = np.gradient(x_high, t_high)  # x 방향 속도
-        vy = np.gradient(y_high, t_high)  # y 방향 속도
-    else:
-        vx = np.zeros_like(x_high)
-        vy = np.zeros_like(y_high)
-
-    def moving_avg(arr: np.ndarray, k: int) -> np.ndarray:
-        """이동 평균을 계산하는 함수"""
-        if k <= 1:
-            return arr
-        kernel = np.ones(k, dtype=float) / float(k)
-        return np.convolve(arr, kernel, mode='same')
-
-    # 창 크기는 30~60Hz 샘플링을 가정해 5~9샘플 정도
-    win = max(5, int(round(0.08 / max(np.median(np.diff(t_high)) if t_high.size > 1 else 0.033, 1e-3))))
-    vx_s = moving_avg(vx, win)
-    vy_s = moving_avg(vy, win)
-
-    # 4) top 검출
-    MIN_TOP_TIME = max(10.0 / fps, 0.15)  # 최소 top 시간
-    
-    if camera_view == 'front':
-        # 정면 시점: y 최소값 부근에서 속도 0 교차점 찾기
-        rel_idx0 = int(np.argmin(y_high)) if y_high.size else 0
-        # 속도 0 교차점 찾기(부호 변화)
-        zero_idx = rel_idx0
-        for i in range(max(1, rel_idx0 - win), min(len(vy_s) - 1, rel_idx0 + win)):
-            if vy_s[i - 1] < 0 <= vy_s[i] or vy_s[i - 1] > 0 >= vy_s[i]:
-                zero_idx = i
-                break
-        rel_idx = zero_idx
-    else:
-        # 사이드 시점: x 편차 최대값 부근에서 속도 0 교차점 찾기
-        base_x = x_high[0] if x_high.size else 0.0
-        rel_idx0 = int(np.argmax(np.abs(x_high - base_x))) if x_high.size else 0
-        zero_idx = rel_idx0
-        for i in range(max(1, rel_idx0 - win), min(len(vx_s) - 1, rel_idx0 + win)):
-            if vx_s[i - 1] < 0 <= vx_s[i] or vx_s[i - 1] > 0 >= vx_s[i]:
-                zero_idx = i
-                break
-        rel_idx = zero_idx
-    
-    # top 시간 계산 및 최소값 검증
-    top_time = t_high[rel_idx] if t_high.size else (start_time + MIN_TOP_TIME)
-    if top_time - start_time < MIN_TOP_TIME:
-        top_time = start_time + MIN_TOP_TIME
-
-    # 5) finish 검출: 속도 크기(|v|)가 임계값 이하로 내려간 최초 시점
-    vmag = np.sqrt(vx_s**2 + vy_s**2)  # 속도 크기
-    
-    # 스케일-불변 임계값: 초기 구간의 80퍼센타일을 기반으로 10~20% 수준으로 설정
-    try:
-        ref = np.percentile(vmag[: max(10, len(vmag)//5)], 80)
-    except Exception:
-        ref = float(np.max(vmag)) if vmag.size else 0.1
-    thresh = max(0.1 * ref, 1e-3)
-    
-    # 연속 샘플 수 계산 (시간 기반)
-    hold_samples = max(5, int(round(0.12 / max(np.median(np.diff(t_high)) if t_high.size > 1 else 0.033, 1e-3))))
-    
-    # finish 지점 검출
-    finish_idx = None
-    for i in range(rel_idx + 1, len(vmag) - hold_samples):
-        seg = vmag[i : i + hold_samples]
-        if np.all(seg < thresh):  # 연속으로 속도가 낮음
-            finish_idx = i
-            break
-    
-    # 다운스윙 길이 제약 조건
-    MIN_DOWN = 0.35  # 최소 다운스윙 시간 (초)
-    DEFAULT_DOWN = 0.75  # 기본 다운스윙 시간 (초)
-    end_time = times[-1]
-    
-    if finish_idx is not None:
-        finish_time = t_high[finish_idx]
-    else:
-        # finish를 찾지 못한 경우 기본값 사용
-        remain = end_time - top_time
-        if remain < MIN_DOWN:
-            pull = MIN_DOWN - remain
-            top_time = max(start_time + MIN_TOP_TIME, top_time - pull)
-        finish_time = min(end_time, top_time + DEFAULT_DOWN)
-
     return start_time, top_time, finish_time, start_time
 
 
@@ -547,155 +415,113 @@ def detect_takeback_start(video_path: str, window: int = 5, movement_threshold: 
     Args:
         video_path: 비디오 파일 경로
         window: 분석 윈도우 크기 (기본값: 5)
-        movement_threshold: 움직임 감지 임계값 (기본값: 0.005)
+        movement_threshold: 움직임 임계값 (기본값: 0.005)
         
     Returns:
-        int: 테이크백 시작 프레임 인덱스 (절대)
+        int: 테이크백 시작 프레임 번호
     """
-    cap = cv2.VideoCapture(video_path)
     mp_p = mp_pose
-
-    # 데이터 저장 리스트
-    hand_positions = []  # [x,y,z] 정규화 좌표
-    elbow_angles = []    # deg (도)
-    frame_idx = []
-
-    # MediaPipe 포즈 객체 생성
-    with mp_p.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
-        fi = 0
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return 0
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    
+    hand_positions = []
+    elbow_angles = []
+    frame_indices = []
+    
+    with mp_p.Pose(
+        static_image_mode=False,
+        model_complexity=1,
+        smooth_landmarks=True,
+        enable_segmentation=False,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    ) as pose:
+        frame_idx = 0
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            # BGR을 RGB로 변환
+                
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            # 포즈 랜드마크 검출
             result = pose.process(rgb)
+            
             if result.pose_landmarks:
-                lm = result.pose_landmarks.landmark
-                # 필요한 랜드마크 추출
-                rw = lm[mp_p.PoseLandmark.RIGHT_WRIST]    # 오른손목
-                re = lm[mp_p.PoseLandmark.RIGHT_ELBOW]    # 오른팔꿈치
-                rs = lm[mp_p.PoseLandmark.RIGHT_SHOULDER] # 오른어깨
-
-                # 손 위치 (3D 좌표)
-                hand_pos = np.array([rw.x, rw.y, rw.z])
-
-                # 팔꿈치 각도 계산 (어깨-팔꿈치-손목)
-                ba = np.array([rs.x, rs.y, rs.z]) - np.array([re.x, re.y, re.z])  # 어깨→팔꿈치
-                bc = np.array([rw.x, rw.y, rw.z]) - np.array([re.x, re.y, re.z])  # 손목→팔꿈치
-                ba_norm = ba / (np.linalg.norm(ba) + 1e-8)  # 정규화
-                bc_norm = bc / (np.linalg.norm(bc) + 1e-8)  # 정규화
-                cos_angle = np.clip(np.dot(ba_norm, bc_norm), -1.0, 1.0)  # 코사인 각도
-                angle = float(np.degrees(np.arccos(cos_angle)))  # 도 단위로 변환
-
-                # 데이터 저장
-                hand_positions.append(hand_pos)
-                elbow_angles.append(angle)
-                frame_idx.append(fi)
-            fi += 1
-    cap.release()
-
-    # 충분한 데이터가 없는 경우 기본값 반환
-    if len(hand_positions) < window + 2:
-        return 0
-
-    # numpy 배열로 변환
-    hand_positions = np.asarray(hand_positions, dtype=float)
-    elbow_angles = np.asarray(elbow_angles, dtype=float)
-
-    # 손 위치 이동 거리 (정규화 좌표)
-    hand_diff = np.linalg.norm(hand_positions[1:] - hand_positions[:-1], axis=1)
-    # 팔꿈치 각도 변화량
-    angle_diff = np.abs(elbow_angles[1:] - elbow_angles[:-1])
-
-    # 두 조건을 동시에 만족하는 첫 번째 지점 찾기
-    for i in range(len(hand_diff)):
-        if hand_diff[i] > movement_threshold and angle_diff[i] > movement_threshold * 100.0:
-            return frame_idx[i + 1]
+                landmarks = result.pose_landmarks.landmark
+                
+                # 오른손목 위치
+                right_wrist = landmarks[mp_p.PoseLandmark.RIGHT_WRIST]
+                hand_positions.append((right_wrist.x, right_wrist.y))
+                
+                # 오른팔꿈치 각도 계산
+                right_shoulder = landmarks[mp_p.PoseLandmark.RIGHT_SHOULDER]
+                right_elbow = landmarks[mp_p.PoseLandmark.RIGHT_ELBOW]
+                
+                # 벡터 계산
+                vec1 = np.array([right_elbow.x - right_shoulder.x, right_elbow.y - right_shoulder.y])
+                vec2 = np.array([right_wrist.x - right_elbow.x, right_wrist.y - right_elbow.y])
+                
+                # 각도 계산
+                if np.linalg.norm(vec1) > 0 and np.linalg.norm(vec2) > 0:
+                    cos_angle = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+                    cos_angle = np.clip(cos_angle, -1.0, 1.0)
+                    angle = np.arccos(cos_angle)
+                    elbow_angles.append(angle)
+                else:
+                    elbow_angles.append(0.0)
+                
+                frame_indices.append(frame_idx)
+            
+            frame_idx += 1
     
-    return 0
+    cap.release()
+    
+    if len(hand_positions) < window * 2:
+        return 0
+    
+    # 손 위치 이동량과 팔꿈치 각도 변화량 계산
+    hand_movements = []
+    elbow_changes = []
+    
+    for i in range(window, len(hand_positions) - window):
+        # 손 위치 이동량 (이전 윈도우와 현재 윈도우의 평균 위치 차이)
+        prev_hand = np.mean(hand_positions[i-window:i], axis=0)
+        curr_hand = np.mean(hand_positions[i:i+window], axis=0)
+        hand_movement = np.linalg.norm(curr_hand - prev_hand)
+        hand_movements.append(hand_movement)
+        
+        # 팔꿈치 각도 변화량
+        prev_elbow = np.mean(elbow_angles[i-window:i])
+        curr_elbow = np.mean(elbow_angles[i:i+window])
+        elbow_change = abs(curr_elbow - prev_elbow)
+        elbow_changes.append(elbow_change)
+    
+    # 두 조건을 모두 만족하는 첫 번째 지점 찾기
+    for i, (hand_mov, elbow_chg) in enumerate(zip(hand_movements, elbow_changes)):
+        if hand_mov > movement_threshold and elbow_chg > 0.1:  # 각도 변화 임계값
+            return frame_indices[i + window]
+    
+    # 조건을 만족하는 지점이 없으면 중간 지점 반환
+    return frame_indices[len(frame_indices) // 2] if frame_indices else 0
 
 
-def detect_address_before_takeback(video_path: str, takeback_start_abs: int,
-                                   stable_window: int = 10,
-                                   stable_threshold: float = 0.0015,
-                                   prepad_frames: int = 2) -> int:
+def detect_address_before_takeback(video_path: str, takeback_start_frame: int) -> int:
     """
-    테이크백 시작 직전의 어드레스(정지) 구간 시작 프레임을 절대 인덱스로 반환하는 함수
+    테이크백 시작 프레임 이전에서 어드레스 구간(정지 상태)의 시작 프레임을 찾는 함수
     
     Args:
         video_path: 비디오 파일 경로
-        takeback_start_abs: 테이크백 시작 절대 프레임
-        stable_window: 안정성 판단 윈도우 크기 (기본값: 10)
-        stable_threshold: 안정성 임계값 (기본값: 0.0015)
-        prepad_frames: 앞쪽으로 이동할 프레임 수 (기본값: 2)
+        takeback_start_frame: 테이크백 시작 프레임
         
     Returns:
-        int: 어드레스 시작 절대 프레임 인덱스
-        
-    특징:
-        - stable_window 동안 손목 이동 평균이 stable_threshold 이하인 마지막 지점을 찾고
-        - 약간 앞쪽(prepad)으로 이동하여 안전한 시작점 확보
+        int: 어드레스 시작 프레임
     """
-    cap = cv2.VideoCapture(video_path)
-    mp_p = mp_pose
-    
-    # 손목 좌표와 프레임 인덱스 저장
-    hand = []
-    idxs = []
-    
-    with mp_p.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
-        fi = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            # BGR을 RGB로 변환
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            # 포즈 랜드마크 검출
-            result = pose.process(rgb)
-            if result.pose_landmarks:
-                # 오른손목 랜드마크 추출
-                rw = result.pose_landmarks.landmark[mp_p.PoseLandmark.RIGHT_WRIST]
-                # 2D 좌표 저장
-                hand.append([rw.x, rw.y])
-                idxs.append(fi)
-            fi += 1
-    cap.release()
-
-    # 데이터가 없는 경우 기본값 반환
-    if not hand:
-        return max(0, takeback_start_abs - 10)
-
-    # numpy 배열로 변환
-    hand = np.asarray(hand)
-    
-    # 연속 프레임 간 이동 거리 계산
-    diffs = np.linalg.norm(hand[1:] - hand[:-1], axis=1)
-    
-    # 이동 평균 계산
-    if len(diffs) < stable_window:
-        return max(0, takeback_start_abs - 10)
-    
-    kernel = np.ones(stable_window) / stable_window
-    mov = np.convolve(diffs, kernel, mode='same')
-
-    # 테이크백 시작 절대 프레임에 해당하는 인덱스 찾기
-    try:
-        tb_pos = next(i for i, f in enumerate(idxs) if f >= takeback_start_abs)
-    except StopIteration:
-        tb_pos = len(idxs) - 1
-
-    # tb_pos 이전에서 가장 최근의 정지 구간 찾기
-    candidate = 0
-    for i in range(max(0, tb_pos - 1)):
-        if mov[i] <= stable_threshold:
-            candidate = i
-    
-    # prepad_frames만큼 앞쪽으로 이동하여 안전한 시작점 확보
-    address_abs = idxs[max(0, candidate - prepad_frames)]
-    return address_abs
+    # 간단한 구현: 테이크백 시작 프레임에서 10프레임 이전을 어드레스로 설정
+    address_frame = max(0, takeback_start_frame - 10)
+    return address_frame
 
 
 def crop_video_from_frame(input_path: str, start_frame: int, output_path: str) -> bool:
@@ -704,7 +530,7 @@ def crop_video_from_frame(input_path: str, start_frame: int, output_path: str) -
     
     Args:
         input_path: 입력 영상 경로
-        start_frame: 시작 프레임 번호
+        start_frame: 시작 프레임 번호 (포함)
         output_path: 출력 영상 경로
         
     Returns:
@@ -729,7 +555,7 @@ def crop_video_from_frame(input_path: str, start_frame: int, output_path: str) -
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
     
-    # 프레임 복사
+    # 프레임 복사 (영상 끝까지)
     while True:
         ret, frame = cap.read()
         if not ret:

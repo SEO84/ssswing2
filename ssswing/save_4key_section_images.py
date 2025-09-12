@@ -233,13 +233,13 @@ def safe_imwrite(file_path, image):
 
 def save_4key_section_images(video_path, output_dir, phases, video_type="user"):
     """
-    영상에서 phases dict(address, top, finish)로 지정된 프레임 이미지를 output_dir에 저장합니다.
+    영상에서 phases dict(address, impact/top, finish)로 지정된 프레임 이미지를 output_dir에 저장합니다.
     프로와 사용자 영상에 대해 각각 3장씩만 저장합니다.
     
     Args:
         video_path (str): 입력 영상 경로
         output_dir (str): 저장 폴더
-        phases (dict): {'address': idx, 'top': idx, 'finish': idx}
+        phases (dict): {'address': idx, 'impact' 또는 'top': idx, 'finish': idx}
         video_type (str): "pro" 또는 "user" (파일명 구분용)
     Returns:
         dict: 저장된 파일 경로
@@ -275,11 +275,10 @@ def save_4key_section_images(video_path, output_dir, phases, video_type="user"):
             print(f"[WARNING] phases[{key}] 값 변환 실패: {value} -> 기본값 {default} 사용")
             return default
     
-    # 저장할 키 프레임 정의 (3개만: 스타트, 백스윙탑, 피니시)
+    # 저장할 키 프레임 정의 (start, finish만 저장) - 임팩트/탑 제거
     key_frames = {
-        'start': safe_get_phase_value(phases, 'address', 0),  # 스타트 (어드레스)
-        'top': safe_get_phase_value(phases, 'top', 25),       # 백스윙탑
-        'finish': safe_get_phase_value(phases, 'finish', 50)  # 피니시
+        'start': safe_get_phase_value(phases, 'address', 0),
+        'finish': safe_get_phase_value(phases, 'finish', 50)
     }
     
     print(f"[INFO] 저장할 키 프레임: {key_frames}")

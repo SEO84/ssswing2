@@ -123,22 +123,25 @@ def run_user_comparison(video1_path: str, video2_path: str, project_root: str) -
             with open(cache_t, 'w') as f:
                 json.dump({'start_abs': start_abs_t}, f)
         
-        # 스윙 시작 직전의 안정된 자세를 찾기 위해 시작점을 앞으로 이동
-        # 웨글 부분을 완전히 건너뛰고 스윙 시작 직전의 어드레스 자세부터 시작
-        waggle_skip_frames = int(1.5 * 30)  # 1.5초 * 30fps = 45프레임 (더 넉넉하게)
+        # 스윙 시작(웨글 제외) 직전 1프레임부터 시작하도록 프리롤 적용
+        # 환경변수 PREROLL_FRAMES로 조정 가능 (기본 1)
+        try:
+            preroll_frames = max(0, int(os.getenv("PREROLL_FRAMES", "1")))
+        except Exception:
+            preroll_frames = 1
         
         # 키 프레임 검출 시간 측정
         keyframes_elapsed = time.time() - step_start
         update_progress("스윙 키 프레임 검출 완료", 25, keyframes_elapsed)
         print(f"[TIMING] 스윙 키 프레임 검출: {keyframes_elapsed:.1f}초")
         
-        if start_abs_b > waggle_skip_frames:
-            start_abs_b = start_abs_b - waggle_skip_frames
-        if start_abs_t > waggle_skip_frames:
-            start_abs_t = start_abs_t - waggle_skip_frames
-            
+        start_abs_b = max(0, int(start_abs_b) - preroll_frames)
+        start_abs_t = max(0, int(start_abs_t) - preroll_frames)
+        print(f"[INFO] PREROLL_FRAMES={preroll_frames} → 시작 프레임(B/T)={start_abs_b}/{start_abs_t}")
+        
         print(f"[INFO] 스윙 시작 직전 프레임부터 시작: baseline 시작점={start_abs_b}, target 시작점={start_abs_t}")
         
+        # 피니시 절대 프레임 계산 로직은 옵션A 롤백에 따라 제거
     except Exception as e:
         print(f"[WARNING] 스윙 시작점 감지 실패: {e} → 기본값 사용")
         # 검출 실패 시 기본값 사용 (스윙 시작 직전을 고려하여 충분히 앞에서 시작)
@@ -245,7 +248,7 @@ def run_user_comparison(video1_path: str, video2_path: str, project_root: str) -
     # 기준 영상과 타겟 영상을 비교하여 점수 계산
     print("[INFO] 점수 계산 시작...")
     try:
-        s = score_all(baseline_path, target_path)
+        s = score_all(baseline_path, target_path, use_no_top_method=True)
         print(f"[INFO] 점수 계산 완료: {s}")
     except Exception as e:
         print(f"[ERROR] 점수 계산 실패: {e}")

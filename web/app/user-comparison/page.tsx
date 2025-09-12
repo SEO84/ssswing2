@@ -92,11 +92,29 @@ export default function UserComparisonPage() {
   const pollAnalysisResult = async (id: string) => {
     console.log('폴링 시작 - 분석 ID:', id);
     let pollCount = 0;
-    const maxPolls = 30; // 최대 150초 (30 * 5초)
+    const maxPolls = 200; // 시간 제한 없음 (200 * 3초 = 10분, 충분히 긴 시간)
+    let pollInterval: NodeJS.Timeout | null = null;
     
-    const pollInterval = setInterval(async () => {
+    const stopPolling = () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+        console.log('폴링 중단됨');
+      }
+    };
+    
+    pollInterval = setInterval(async () => {
       pollCount++;
       console.log(`폴링 시도 ${pollCount}/${maxPolls} - 분석 ID: ${id}`);
+      
+      // 최대 폴링 횟수 초과 시 강제 중단 (매우 긴 시간 후)
+      if (pollCount > maxPolls) {
+        console.log('최대 폴링 횟수 초과, 폴링 강제 중단');
+        setError('분석 시간이 초과되었습니다. (10분 초과) 분석이 아직 진행 중일 수 있습니다. 아래 버튼을 클릭하여 결과를 확인해보세요.');
+        setIsAnalyzing(false);
+        stopPolling();
+        return;
+      }
       
       try {
         let responseData: any;
@@ -106,9 +124,9 @@ export default function UserComparisonPage() {
           console.log('분석 결과가 아직 준비되지 않음 (404)');
           if (pollCount >= maxPolls) {
             console.log('최대 폴링 횟수 도달, 폴링 중단');
-            setError('분석 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.');
+            setError('분석 시간이 초과되었습니다. (10분 초과) 분석이 아직 진행 중일 수 있습니다. 아래 버튼을 클릭하여 결과를 확인해보세요.');
             setIsAnalyzing(false);
-            clearInterval(pollInterval);
+            stopPolling();
           }
           return; // 404일 때는 계속 폴링
         }
@@ -119,28 +137,35 @@ export default function UserComparisonPage() {
           console.log('분석 완료!');
           setAnalysisResult(result.result);
           setIsAnalyzing(false);
-          clearInterval(pollInterval);
+          stopPolling();
         } else if (result.status === 'failed') {
           console.log('분석 실패:', result.result?.error);
           setError(result.result?.error || '분석에 실패했습니다.');
           setIsAnalyzing(false);
-          clearInterval(pollInterval);
+          stopPolling();
         } else if (result.status === 'processing') {
           console.log('분석 진행 중...');
           // processing 상태면 계속 폴링
         } else {
           console.log('알 수 없는 상태:', result.status);
+          // 알 수 없는 상태도 최대 횟수 후 중단
+          if (pollCount >= maxPolls) {
+            setError('분석 상태를 확인할 수 없습니다. 잠시 후 다시 시도해주세요.');
+            setIsAnalyzing(false);
+            stopPolling();
+          }
         }
       } catch (err) {
         console.error('폴링 중 오류:', err);
         if (pollCount >= maxPolls) {
           setError(err instanceof Error ? err.message : '분석 결과 조회에 실패했습니다.');
           setIsAnalyzing(false);
-          clearInterval(pollInterval);
+          stopPolling();
         }
       }
-    }, 5000); // 5초마다 폴링 (분석 시간 고려)
+    }, 3000); // 3초마다 폴링 (분석 시간 고려)
   };
+
 
   const resetAnalysis = () => {
     setVideo1(null);
@@ -150,6 +175,7 @@ export default function UserComparisonPage() {
     setAnalysisResult(null);
     setIsAnalyzing(false);
     setError(null);
+    // 폴링 중단 (컴포넌트 언마운트 시 자동으로 정리됨)
   };
 
   // 분석 ID가 바뀔 때 미리보기 비디오 강제 재로딩 (캐시/오디오 버퍼 잔존 방지)
@@ -163,6 +189,14 @@ export default function UserComparisonPage() {
       v?.play().catch(() => {});
     } catch {}
   }, [analysisResult?.analysisId]);
+
+  // 컴포넌트 언마운트 시 폴링 정리
+  useEffect(() => {
+    return () => {
+      // 컴포넌트 언마운트 시 모든 타이머 정리
+      console.log('컴포넌트 언마운트, 폴링 정리');
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 p-6">
@@ -263,7 +297,7 @@ export default function UserComparisonPage() {
               <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
                 <p className="text-red-600 text-center">{error}</p>
                 {analysisId && (
-                  <div className="mt-2 text-sm text-gray-600">
+                  <div className="mt-2 text-sm text-gray-600 text-center">
                     <p>분석 ID: {analysisId}</p>
                     <p>디버깅 정보: <a href={`${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/debug/analysis/${analysisId}`} target="_blank" className="text-blue-600 hover:underline">Redis 데이터 확인</a></p>
                   </div>
@@ -359,6 +393,13 @@ export default function UserComparisonPage() {
                 <h3 className="text-xl font-semibold text-gray-800 mb-4">
                   🦴 포즈 스켈레톤 비교
                 </h3>
+                {/* 디버깅 정보 */}
+                <div className="mb-4 p-3 bg-gray-100 rounded-lg text-sm text-gray-600">
+                  <p><strong>첫 번째 영상:</strong> {video1 ? `✅ ${video1.name}` : '❌ 없음'}</p>
+                  <p><strong>두 번째 영상:</strong> {video2 ? `✅ ${video2.name}` : '❌ 없음'}</p>
+                  <p><strong>사용자 포즈 데이터:</strong> {analysisResult.userPoses ? `✅ ${analysisResult.userPoses.length}개 프레임` : '❌ 없음'}</p>
+                  <p><strong>비교 포즈 데이터:</strong> {analysisResult.comparisonPoses ? `✅ ${analysisResult.comparisonPoses.length}개 프레임` : '❌ 없음'}</p>
+                </div>
                 <SideBySidePlayer
                   leftVideoUrl={video1 ? URL.createObjectURL(video1) : ''}
                   rightVideoUrl={video2 ? URL.createObjectURL(video2) : ''}

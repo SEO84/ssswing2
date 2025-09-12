@@ -1083,44 +1083,102 @@ def _evaluate_top_pose_simple(lms):
 # -------------------- 개선된 임팩트 검출 (통합 로직) --------------------
 def detect_impact(landmarks_data, velocities, fps, start_frame, end_frame):
     """
-    임팩트 검출: 속도 최대 + 손 y 최소 결합 점수
+    임팩트 검출(개선 버전): 속도 스무딩 + 최소 속도 임계 + 뷰별 가중 + 손높이 상대화 + 근접 재탐색
     
-    Args:
-        landmarks_data: 랜드마크 데이터 리스트
-        velocities: 프레임별 속도 배열
-        fps: 프레임레이트
-        start_frame: 검색 시작 프레임
-        end_frame: 검색 종료 프레임
-    
-    Returns:
-        int: 임팩트 프레임 인덱스
+    핵심 아이디어:
+      - 속도는 EMA로 스무딩하여 노이즈 완화
+      - 너무 느린 프레임은 제외(VEL_MIN)
+      - 정면/측면 뷰에 따라 (속도):(손높이 역수) 가중을 달리 부여
+      - 손높이는 어드레스 대비 상대 높이(hand_y / hand_y_address)로 정규화하여 카메라 각도 보정
+      - 1차 후보 이후 ±win 창에서 손높이 최소 프레임로 미세조정
     """
-    impact_candidates = []
-    
-    for i in range(start_frame, min(end_frame, len(landmarks_data))):
+    N = len(landmarks_data)
+    if N == 0:
+        return None
+
+    # 검색 구간 보정: 너무 이른/늦은 영역 제외 (0.15s ~ end)
+    start_frame = max(0, int(start_frame))
+    end_frame = min(int(end_frame), N)
+    start_frame = max(start_frame, int(_safe_idx(_detect_swing_start(landmarks_data, fps=fps) + int(0.15 * fps), 0, N - 1)))
+
+    # 뷰 타입 판별(가중치 조정용)
+    try:
+        view_type = _detect_view_type_robust(landmarks_data[start_frame:end_frame])
+    except Exception:
+        view_type = 'side'
+
+    # 속도 스무딩(EMA)
+    velocities = _ema(velocities, alpha=0.35) if velocities is not None else []
+
+    # 어드레스 손높이(상대화 기준) 추정
+    try:
+        addr_idx = _detect_swing_start(landmarks_data, fps=fps)
+        hc_addr = _hands_center(landmarks_data[_safe_idx(addr_idx, 0, N - 1)])
+        hand_y_base = float(hc_addr.y) if hc_addr is not None else 0.7
+    except Exception:
+        hand_y_base = 0.7
+    hand_y_base = max(hand_y_base, 1e-3)
+
+    VEL_MIN = 0.02
+    impact_candidates: list[tuple[float, int, float, float]] = []  # (score, idx, velocity, hand_y_rel)
+
+    for i in range(start_frame, min(end_frame, N)):
         lms = landmarks_data[i]
         if lms is None:
             continue
-            
         hc = _hands_center(lms)
-        if hc is None: 
+        if hc is None:
             continue
-            
-        # 속도와 손 높이를 결합한 점수
-        # 속도가 높을수록, 손이 낮을수록(임팩트에서 손이 낮아짐) 좋음
-        velocity = velocities[i] if i < len(velocities) else 0.0
-        hand_y = hc.y
-        
-        # 결합 점수: 속도 × (1/손높이)
-        score = velocity * (1.0 / (hand_y + 1e-6))
-        
-        impact_candidates.append((score, i))
-    
+        velocity = float(velocities[i]) if i < len(velocities) else 0.0
+        if velocity < VEL_MIN:
+            continue
+        hand_y = float(hc.y)
+        hand_y_rel = hand_y / hand_y_base
+
+        # 뷰별 가중치 결합 점수
+        if view_type == 'front':
+            score = velocity * 0.7 + (1.0 / (hand_y_rel + 1e-6)) * 0.3
+        else:  # side (default)
+            score = velocity * 0.8 + (1.0 / (hand_y_rel + 1e-6)) * 0.2
+
+        impact_candidates.append((float(score), i, velocity, hand_y_rel))
+
     if not impact_candidates:
         return None
-    
-    # 최고 점수 후보 반환
-    return max(impact_candidates, key=lambda t: t[0])[1]
+
+    # 1차 선택: 결합 점수 최대 프레임
+    score_max_idx = max(impact_candidates, key=lambda t: t[0])[1]
+
+    # 2차: 시간 창 기반 투표/평균(변형 포즈 허용)
+    win_sec = 0.10  # ±0.1s 창
+    win = max(1, int(win_sec * fps / 2.0))
+    lo = max(start_frame, score_max_idx - win)
+    hi = min(end_frame, score_max_idx + win + 1)
+
+    local = [t for t in impact_candidates if lo <= t[1] < hi]
+    if local:
+        v_max = max(t[2] for t in local)
+        # 속도 상위(>=90% max) + 손높이 상대값 허용(<=1.05)
+        local_candidates = [t for t in local if t[2] >= 0.9 * v_max and t[3] <= 1.05]
+        if local_candidates:
+            # 단순 투표(동률 시 손높이 상대값 최소 프레임)
+            counts: dict[int, int] = {}
+            for _, idx, _, _ in local_candidates:
+                counts[idx] = counts.get(idx, 0) + 1
+            best_idx = max(counts.items(), key=lambda kv: (kv[1], -kv[0]))[0]
+            # 근접 후보 중에서도 손이 가장 낮은 프레임으로 한 번 더 보정
+            best_group = [t for t in local_candidates if t[1] == best_idx]
+            if best_group:
+                best = min(best_group, key=lambda t: t[3])
+                return int(best[1])
+
+        # 후보 없으면 손높이 상대값 최소 프레임로 미세조정(기존 로직)
+        strong = [t for t in local if t[2] >= 0.9 * v_max]
+        if strong:
+            best = min(strong, key=lambda t: t[3])
+            return int(best[1])
+
+    return int(score_max_idx)
 
 # -------------------- 개선된 피니시 검출 (통합 로직) --------------------
 def detect_finish(landmarks_data, fps, impact_frame):
@@ -1281,4 +1339,169 @@ def detect_swing_phases(landmarks_data, total_frames=None, video_aspect_ratio=No
             "followthrough": [min(3, nf - 1), min(4, nf - 1)],
             "finish": min(4, nf - 1),
             "finish_plus_1_5s": min(4, nf - 1)
+        }
+
+
+# -------------------- 간단 버전: Address/Finish만 감지 --------------------
+def detect_swing_phases_simple(landmarks_data, fps=30, video_path: str | None = None):
+    """
+    Address와 Finish만 감지하는 간단한 스윙 단계 감지 함수
+    - 시작: 정적→가속 전환 직전 프레임(_detect_swing_start - 1)
+    - 종료: finish 포즈가 0.6초 이상 유지되는 첫 프레임(detect_finish)
+    """
+    if not landmarks_data or len(landmarks_data) < 5:
+        num_frames = 5
+        return {
+            "address": 0, "address_s": 0.0,
+            "finish": min(4, num_frames - 1), "finish_s": min(4, num_frames - 1) / max(1, fps),
+            "segment": [0, min(4, num_frames - 1)]
+        }
+
+    try:
+        num_frames = len(landmarks_data)
+
+        swing_start = _detect_swing_start(landmarks_data, fps=fps)
+        address_frame = _safe_idx(swing_start - 1, 0, num_frames - 1)
+
+        finish_frame = detect_finish(landmarks_data, fps, address_frame)
+        if finish_frame is None:
+            finish_frame = _safe_idx(address_frame + int(1.0 * fps), 0, num_frames - 1)
+
+        MIN_GAP = int(0.5 * fps)
+        if finish_frame <= address_frame:
+            finish_frame = _safe_idx(address_frame + MIN_GAP, 0, num_frames - 1)
+
+        address_s = address_frame / max(1, fps)
+        finish_s = finish_frame / max(1, fps)
+
+        result = {
+            "address": address_frame, "address_s": address_s,
+            "finish": finish_frame, "finish_s": finish_s,
+            "segment": [address_frame, finish_frame]
+        }
+        print(f"[INFO] Simple Phases - Address: {address_frame} ({address_s:.2f}s), Finish: {finish_frame} ({finish_s:.2f}s)")
+        return result
+    except Exception as e:
+        print(f"[ERROR] detect_swing_phases_simple failed: {e}")
+        return {
+            "address": 0, "address_s": 0.0,
+            "finish": 30, "finish_s": 1.0,
+            "segment": [0, 30]
+        }
+
+
+# -------------------- 백스윙 탑 무시 버전: 임팩트 중심 2구간 비교 --------------------
+def detect_swing_phases_no_top(landmarks_data, total_frames=None, video_aspect_ratio=None, fps=30, video_path: str | None = None):
+    """
+    백스윙 탑을 무시한 스윙 단계 감지 함수
+    
+    임팩트 중심 2구간 비교 방식:
+    - 구간1: Address → Impact (전체 백스윙 + 다운스윙)
+    - 구간2: Impact → Finish (팔로우스루)
+    
+    Args:
+        landmarks_data: mediapipe pose landmarks 리스트 (프레임 순서)
+        total_frames: 전체 프레임 수(선택)
+        video_aspect_ratio: W/H. None이면 1.0 처리
+        fps: 프레임레이트(기본 30)
+        video_path: 비디오 파일 경로 (선택사항)
+        
+    Returns:
+        dict: address/impact/finish 및 구간 정보
+    """
+    # 빈 입력 처리
+    if not landmarks_data:
+        num_frames = total_frames if total_frames is not None else 5
+        return {
+            "address": 0, "address_s": 0.0,
+            "impact": min(2, num_frames - 1), "impact_s": min(2, num_frames - 1) / fps,
+            "finish": min(4, num_frames - 1), "finish_s": min(4, num_frames - 1) / fps,
+            "segment1": [0, min(2, num_frames - 1)],  # Address → Impact
+            "segment2": [min(2, num_frames - 1), min(4, num_frames - 1)]  # Impact → Finish
+        }
+
+    try:
+        num_frames = len(landmarks_data)
+        if total_frames is None:
+            total_frames = num_frames
+        
+        # 비디오 길이 제한 설정
+        ar = 1.0 if video_aspect_ratio is None else float(video_aspect_ratio)
+        if ar < 1.0:      lim = int(num_frames * 0.70)
+        elif ar > 1.5:    lim = int(num_frames * 0.80)
+        else:             lim = int(num_frames * 0.75)
+        video_length_limit = max(1, min(lim, num_frames))
+
+        # 1) 스윙 시작 검출 -> 어드레스 = 시작-1
+        swing_start = _detect_swing_start(landmarks_data, fps=fps)
+        address_frame = _safe_idx(swing_start - 1, 0, num_frames - 1)
+
+        # 2) 손 중심 속도 계산 (임팩트 검출용)
+        hc_xy = []
+        for i in range(num_frames):
+            hc = _hands_center(landmarks_data[i])
+            hc_xy.append((np.nan, np.nan) if hc is None else (hc.x, hc.y))
+        hc_xy = np.array(hc_xy)
+        
+        velocities = np.zeros(num_frames)
+        for i in range(1, num_frames):
+            if not np.any(np.isnan(hc_xy[i])) and not np.any(np.isnan(hc_xy[i-1])):
+                velocities[i] = abs(hc_xy[i,0]-hc_xy[i-1,0]) + abs(hc_xy[i,1]-hc_xy[i-1,1])
+
+        # 3) 임팩트 검출 (Address 이후 ~ 영상 90%)
+        impact_search_start = address_frame
+        impact_search_end = min(int(num_frames * 0.9), num_frames)
+        
+        impact_frame = detect_impact(landmarks_data, velocities, fps, impact_search_start, impact_search_end)
+        
+        if impact_frame is None:
+            # 폴백: Address + 0.3초 (기본 다운스윙 시간)
+            impact_frame = _safe_idx(address_frame + int(0.3 * fps), 0, num_frames - 1)
+
+        # 4) 피니시 검출 (임팩트 이후)
+        finish_frame = detect_finish(landmarks_data, fps, impact_frame)
+        
+        if finish_frame is None:
+            # 폴백: 임팩트 + 0.5초 (기본 팔로우스루 시간)
+            finish_frame = _safe_idx(impact_frame + int(0.5 * fps), 0, num_frames - 1)
+
+        # 5) 최소 간격 보정
+        MIN_GAP = int(0.2 * fps)  # 0.2초 최소 간격
+        if impact_frame <= address_frame:
+            impact_frame = _safe_idx(address_frame + MIN_GAP, 0, num_frames - 1)
+        if finish_frame <= impact_frame:
+            finish_frame = _safe_idx(impact_frame + MIN_GAP, 0, num_frames - 1)
+
+        # 6) 초 단위 환산
+        def frame_to_sec(frame, fps): 
+            return frame / fps
+            
+        address_s = frame_to_sec(address_frame, fps)
+        impact_s = frame_to_sec(impact_frame, fps)
+        finish_s = frame_to_sec(finish_frame, fps)
+
+        result = {
+            "address": address_frame, "address_s": address_s,
+            "impact": impact_frame, "impact_s": impact_s,
+            "finish": finish_frame, "finish_s": finish_s,
+            "segment1": [address_frame, impact_frame],  # Address → Impact
+            "segment2": [impact_frame, finish_frame]    # Impact → Finish
+        }
+
+        # 로그 출력
+        print("[INFO] No-Top Method - Address:", result["address"], f"({address_s:.2f}s)",
+              " Impact:", result["impact"], f"({impact_s:.2f}s)",
+              " Finish:", result["finish"], f"({finish_s:.2f}s)")
+        
+        return result
+
+    except Exception as e:
+        print(f"[ERROR] detect_swing_phases_no_top failed: {e}")
+        nf = len(landmarks_data) if landmarks_data else 5
+        return {
+            "address": 0, "address_s": 0.0,
+            "impact": min(2, nf - 1), "impact_s": min(2, nf - 1) / fps,
+            "finish": min(4, nf - 1), "finish_s": min(4, nf - 1) / fps,
+            "segment1": [0, min(2, nf - 1)],
+            "segment2": [min(2, nf - 1), min(4, nf - 1)]
         }

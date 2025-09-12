@@ -33,13 +33,15 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
   const [currentRepeat, setCurrentRepeat] = useState(0);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [showPoses, setShowPoses] = useState(true);
+  const [leftVideoLoaded, setLeftVideoLoaded] = useState(false);
+  const [rightVideoLoaded, setRightVideoLoaded] = useState(false);
   
   // 스켈레톤 그리기 설정
   const [skeletonColor, setSkeletonColor] = useState('#00FF00'); // 초록색
   const [landmarkRadius, setLandmarkRadius] = useState(8); // 5에서 8로 증가하여 더 진하게
   const [connectionThickness, setConnectionThickness] = useState(4); // 2에서 4로 증가하여 더 진하게
 
-  // 포즈 랜드마크 그리기 함수 (MediaPipe 대신 직접 구현)
+  // 포즈 랜드마크 그리기 함수 (영상 크기별 적응형)
   const drawPoseLandmarks = useCallback((ctx: CanvasRenderingContext2D, poses: PoseData[], frame: number, color: string) => {
     if (!poses || poses.length === 0) return;
     
@@ -48,22 +50,41 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
 
     const canvas = ctx.canvas;
     const landmarks = currentPose.landmarks;
+    
+    // 랜드마크가 비어있거나 유효하지 않은 경우 스킵
+    if (!landmarks || Object.keys(landmarks).length === 0) {
+      console.log(`[DEBUG] 프레임 ${frame}: 랜드마크 없음`);
+      return;
+    }
 
-    // 랜드마크 그리기 (더 안정적인 렌더링)
+    // 영상 크기에 따른 적응형 설정
+    const canvasArea = canvas.width * canvas.height;
+    let adaptiveRadius = landmarkRadius;
+    let adaptiveThickness = connectionThickness;
+    
+    if (canvasArea < 640 * 480) {  // 작은 영상
+      adaptiveRadius = landmarkRadius * 0.8;  // 작은 원
+      adaptiveThickness = connectionThickness * 0.8;  // 얇은 선
+    } else if (canvasArea > 1920 * 1080) {  // 큰 영상
+      adaptiveRadius = landmarkRadius * 1.2;  // 큰 원
+      adaptiveThickness = connectionThickness * 1.2;  // 굵은 선
+    }
+
+    // 랜드마크 그리기 (영상 크기별 적응형)
     Object.entries(landmarks).forEach(([key, [x, y, z]]) => {
-      // 좌표 유효성 검사
-      if (x < 0 || x > 1 || y < 0 || y > 1 || isNaN(x) || isNaN(y)) return;
+      // 좌표 유효성 검사 (더 관대한 기준)
+      if (x < -0.1 || x > 1.1 || y < -0.1 || y > 1.1 || isNaN(x) || isNaN(y)) return;
       
       const pixelX = x * canvas.width;
       const pixelY = y * canvas.height;
       
-      // 더 큰 원으로 그리기
+      // 적응형 크기로 원 그리기
       ctx.beginPath();
-      ctx.arc(pixelX, pixelY, landmarkRadius * 1.5, 0, 2 * Math.PI);
+      ctx.arc(pixelX, pixelY, adaptiveRadius, 0, 2 * Math.PI);
       ctx.fillStyle = color;
       ctx.fill();
       ctx.strokeStyle = '#000';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1;
       ctx.stroke();
     });
 
@@ -84,7 +105,7 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
     ];
 
     ctx.strokeStyle = color;
-    ctx.lineWidth = connectionThickness;
+    ctx.lineWidth = adaptiveThickness;  // 적응형 두께 사용
 
     connections.forEach(([start, end]) => {
       const startLandmark = landmarks[start];
@@ -94,9 +115,9 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
         const [startX, startY, startZ] = startLandmark;
         const [endX, endY, endZ] = endLandmark;
         
-        // 좌표 유효성 검사
-        if (startX < 0 || startX > 1 || startY < 0 || startY > 1 || 
-            endX < 0 || endX > 1 || endY < 0 || endY > 1 ||
+        // 좌표 유효성 검사 (더 관대한 기준)
+        if (startX < -0.1 || startX > 1.1 || startY < -0.1 || startY > 1.1 || 
+            endX < -0.1 || endX > 1.1 || endY < -0.1 || endY > 1.1 ||
             isNaN(startX) || isNaN(startY) || isNaN(endX) || isNaN(endY)) return;
         
         const pixelStartX = startX * canvas.width;
@@ -145,6 +166,17 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
       const currentFrameIndex = Math.min(baseLen - 1, Math.max(0, Math.floor(ratio * baseLen)));
       setCurrentFrame(currentFrameIndex);
       
+      // 디버깅 정보 출력 (1초마다)
+      if (Math.floor(leftVideo.currentTime) % 1 === 0 && Math.floor(leftVideo.currentTime * 10) % 10 === 0) {
+        console.log(`[DEBUG] Left poses: ${leftLen}, Right poses: ${rightLen}, Frame: ${currentFrameIndex}`);
+        if (leftLen > 0 && leftPoses[currentFrameIndex]) {
+          console.log(`[DEBUG] Left pose data:`, leftPoses[currentFrameIndex]);
+        }
+        if (rightLen > 0 && rightPoses[currentFrameIndex]) {
+          console.log(`[DEBUG] Right pose data:`, rightPoses[currentFrameIndex]);
+        }
+      }
+      
       drawPoseLandmarks(leftCtx, leftPoses || [], currentFrameIndex, skeletonColor);
       drawPoseLandmarks(rightCtx, rightPoses || [], currentFrameIndex, skeletonColor);
     }
@@ -184,11 +216,17 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
     };
 
     // 비디오 로드 완료 후 재생 속도 적용
-    const onLoadedMetadata = () => {
+    const onLoadedMetadata = (videoName: string) => {
       const v1 = leftVideo as HTMLVideoElement;
       const v2 = rightVideo as HTMLVideoElement;
       v1.playbackRate = playbackSpeed;
       v2.playbackRate = playbackSpeed;
+      
+      if (videoName === 'left') {
+        setLeftVideoLoaded(true);
+      } else if (videoName === 'right') {
+        setRightVideoLoaded(true);
+      }
     };
     // 기타 속도 보강 이벤트 제거
 
@@ -200,8 +238,8 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
     rightVideo.addEventListener('pause', onPause);
     leftVideo.addEventListener('ended', onEnded);
     rightVideo.addEventListener('ended', onEnded);
-    leftVideo.addEventListener('loadedmetadata', onLoadedMetadata);
-    rightVideo.addEventListener('loadedmetadata', onLoadedMetadata);
+    leftVideo.addEventListener('loadedmetadata', () => onLoadedMetadata('left'));
+    rightVideo.addEventListener('loadedmetadata', () => onLoadedMetadata('right'));
     // 기타 속도 보강 이벤트 제거
 
     return () => {
@@ -213,8 +251,8 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
       rightVideo.removeEventListener('pause', onPause);
       leftVideo.removeEventListener('ended', onEnded);
       rightVideo.removeEventListener('ended', onEnded);
-      leftVideo.removeEventListener('loadedmetadata', onLoadedMetadata);
-      rightVideo.removeEventListener('loadedmetadata', onLoadedMetadata);
+      leftVideo.removeEventListener('loadedmetadata', () => onLoadedMetadata('left'));
+      rightVideo.removeEventListener('loadedmetadata', () => onLoadedMetadata('right'));
       // 기타 속도 보강 이벤트 제거
     };
   }, [isPlaying, currentRepeat, repeatCount, updateFrame, playbackSpeed]);
@@ -265,6 +303,47 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
     return cleanup;
   }, [setupVideoEvents]);
 
+  // 비디오 URL 변경 시 로딩 상태 리셋
+  useEffect(() => {
+    setLeftVideoLoaded(false);
+    setRightVideoLoaded(false);
+  }, [leftVideoUrl, rightVideoUrl]);
+
+  // 비디오 로딩 에러 핸들링
+  useEffect(() => {
+    const leftVideo = leftVideoRef.current;
+    const rightVideo = rightVideoRef.current;
+
+    const handleError = (e: Event, videoName: string) => {
+      console.error(`${videoName} 비디오 로딩 실패:`, e);
+      console.error(`${videoName} 비디오 URL:`, videoName === '왼쪽' ? leftVideoUrl : rightVideoUrl);
+    };
+
+    const handleLoadStart = (videoName: string) => {
+      console.log(`${videoName} 비디오 로딩 시작:`, videoName === '왼쪽' ? leftVideoUrl : rightVideoUrl);
+    };
+
+    if (leftVideo) {
+      leftVideo.addEventListener('error', (e) => handleError(e, '왼쪽'));
+      leftVideo.addEventListener('loadstart', () => handleLoadStart('왼쪽'));
+    }
+    if (rightVideo) {
+      rightVideo.addEventListener('error', (e) => handleError(e, '오른쪽'));
+      rightVideo.addEventListener('loadstart', () => handleLoadStart('오른쪽'));
+    }
+
+    return () => {
+      if (leftVideo) {
+        leftVideo.removeEventListener('error', (e) => handleError(e, '왼쪽'));
+        leftVideo.removeEventListener('loadstart', () => handleLoadStart('왼쪽'));
+      }
+      if (rightVideo) {
+        rightVideo.removeEventListener('error', (e) => handleError(e, '오른쪽'));
+        rightVideo.removeEventListener('loadstart', () => handleLoadStart('오른쪽'));
+      }
+    };
+  }, [leftVideoUrl, rightVideoUrl]);
+
   // playbackSpeed 변경 시 요소에 즉시 반영
   useEffect(() => {
     const v1 = leftVideoRef.current;
@@ -275,11 +354,22 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
 
   // 비디오 이벤트 설정
 
+  // 비디오 URL 유효성 검사
+  const isValidVideoUrl = (url: string) => {
+    return url && url.trim() !== '' && (url.startsWith('blob:') || url.startsWith('http'));
+  };
+
   return (
     <div className="w-full max-w-6xl mx-auto p-6 bg-white rounded-xl shadow-lg">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-2">포즈 스켈레톤 비교</h2>
         <p className="text-gray-600">서버 분석 결과 기반 포즈 스켈레톤 표시</p>
+        
+        {/* 비디오 URL 상태 표시 */}
+        <div className="mt-2 text-sm text-gray-500">
+          <p>왼쪽 비디오 URL: {isValidVideoUrl(leftVideoUrl) ? '✅ 유효' : '❌ 무효'}</p>
+          <p>오른쪽 비디오 URL: {isValidVideoUrl(rightVideoUrl) ? '✅ 유효' : '❌ 무효'}</p>
+        </div>
       </div>
 
       {/* 비디오 플레이어 컨테이너 */}
@@ -299,6 +389,24 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
               ref={leftCanvasRef}
               className="absolute inset-0 w-full h-full pointer-events-none"
             />
+            {!leftVideoLoaded && (
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-800 bg-opacity-75">
+                <div className="text-white text-center">
+                  {isValidVideoUrl(leftVideoUrl) ? (
+                    <>
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
+                      <p>비디오 로딩 중...</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-red-400 mb-2">⚠️</div>
+                      <p>비디오 URL이 유효하지 않습니다</p>
+                      <p className="text-xs mt-1">URL: {leftVideoUrl || '없음'}</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -317,6 +425,24 @@ const SideBySidePlayer: React.FC<SideBySidePlayerProps> = ({
               ref={rightCanvasRef}
               className="absolute inset-0 w-full h-full pointer-events-none"
             />
+            {!rightVideoLoaded && (
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-800 bg-opacity-75">
+                <div className="text-white text-center">
+                  {isValidVideoUrl(rightVideoUrl) ? (
+                    <>
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
+                      <p>비디오 로딩 중...</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-red-400 mb-2">⚠️</div>
+                      <p>비디오 URL이 유효하지 않습니다</p>
+                      <p className="text-xs mt-1">URL: {rightVideoUrl || '없음'}</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

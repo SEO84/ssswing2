@@ -225,8 +225,19 @@ def main():
             print(f"[DEBUG] 프로 영상 비율: {pro_aspect_ratio}")
             print(f"[DEBUG] 유저 영상 비율: {user_aspect_ratio}")
             
-            pro_phases = swing_phase_detector.detect_swing_phases(pro_landmarks, video_aspect_ratio=pro_aspect_ratio)
-            user_phases = swing_phase_detector.detect_swing_phases(user_landmarks, video_aspect_ratio=user_aspect_ratio)
+            # FPS를 실제로 읽어 임팩트 중심(no-top) 검출 사용
+            pro_cap = cv2.VideoCapture(pro_video_path)
+            user_cap = cv2.VideoCapture(user_video_path)
+            pro_fps = pro_cap.get(cv2.CAP_PROP_FPS) or 30.0
+            user_fps = user_cap.get(cv2.CAP_PROP_FPS) or 30.0
+            pro_cap.release(); user_cap.release()
+
+            pro_phases = swing_phase_detector.detect_swing_phases_no_top(
+                pro_landmarks, fps=int(pro_fps), video_path=pro_video_path
+            )
+            user_phases = swing_phase_detector.detect_swing_phases_no_top(
+                user_landmarks, fps=int(user_fps), video_path=user_video_path
+            )
             
             print(f"[DEBUG] 프로 phases 원본: {pro_phases}")
             print(f"[DEBUG] 유저 phases 원본: {user_phases}")
@@ -234,8 +245,8 @@ def main():
         except Exception as e:
             print(f'❌ 스윙 단계 감지 중 오류 발생: {e}')
             print('⚠️ 기본값으로 진행합니다.')
-            pro_phases = {"address": 0, "top": 25, "finish": 50}
-            user_phases = {"address": 0, "top": 22, "finish": 45}
+            pro_phases = {"address": 0, "impact": 25, "finish": 50}
+            user_phases = {"address": 0, "impact": 22, "finish": 45}
         
         print(f"[DEBUG] 프로 phases: {pro_phases}")
         print(f"[DEBUG] 유저 phases: {user_phases}")
@@ -254,23 +265,25 @@ def main():
             # None이거나 빈 딕셔너리인 경우 기본값 사용
             if not phases:
                 print(f"[WARNING] {video_type} phases가 비어있어 기본값을 사용합니다.")
-                return {"address": 0, "top": 25, "finish": 50}
+                return {"address": 0, "impact": 25, "finish": 50}
             
             # 기본 변환
+            # impact가 있으면 우선 사용, 없으면 top을 impact로 간주
+            middle_key = "impact" if ("impact" in phases and phases.get("impact") is not None) else "top"
             normalized = {
                 "address": phases.get("address", 0),
-                "top": phases.get("top", 25),
+                middle_key: phases.get(middle_key, 25),
                 "finish": phases.get("finish", 50)
             }
             
             # 특수한 경우 처리
-            for key in ["top", "finish"]:
+            for key in [middle_key, "finish"]:
                 value = normalized[key]
                 if isinstance(value, list):
-                    normalized[key] = value[0] if value else 25 if key == "top" else 50
+                    normalized[key] = value[0] if value else 25 if key in ("top", "impact") else 50
                     print(f"[INFO] {video_type} {key} 리스트 값 변환: {value} -> {normalized[key]}")
                 elif value is None:
-                    normalized[key] = 25 if key == "top" else 50
+                    normalized[key] = 25 if key in ("top", "impact") else 50
                     print(f"[WARNING] {video_type} {key} 값이 None이어 기본값 사용: {normalized[key]}")
                 else:
                     try:
@@ -279,7 +292,7 @@ def main():
                             normalized[key] = 0
                             print(f"[WARNING] {video_type} {key} 음수 값 수정: {value} -> 0")
                     except (ValueError, TypeError) as e:
-                        default_val = 25 if key == "top" else 50
+                        default_val = 25 if key in ("top", "impact") else 50
                         normalized[key] = default_val
                         print(f"[WARNING] {video_type} {key} 값 변환 실패: {value} -> 기본값 {default_val}")
             
@@ -296,7 +309,7 @@ def main():
             print(f"[DEBUG] {video_type} phases 정규화 완료: {normalized}")
             return normalized
         
-        # phases 데이터 정규화
+        # phases 데이터 정규화 (임팩트 키가 있으면 그대로 유지)
         pro_phases = validate_and_normalize_phases(pro_phases, "프로")
         user_phases = validate_and_normalize_phases(user_phases, "유저")
         
