@@ -606,9 +606,13 @@ def calc_speed_score_three_segments_trajectory(
             r = 1.0
             s = 50.0
         else:
-            r_raw = float(vt / vb)
-            r = max(clip_low, min(clip_high, r_raw))
-            s = float(100.0 * min(r, 1.0 / r))
+            # 대칭성 보장: min(vt/vb, vb/vt) 방식으로 변경
+            # 이렇게 하면 A→B와 B→A의 점수가 동일해집니다
+            r1 = float(vt / vb)
+            r2 = float(vb / vt)
+            r_symmetric = min(r1, r2)  # 더 작은 비율을 사용하여 대칭성 보장
+            r = max(clip_low, min(clip_high, r_symmetric))
+            s = float(100.0 * r)  # 이미 대칭성이 보장된 비율이므로 min(r, 1/r) 불필요
         ratios.append(r)
         seg_scores.append(s)
 
@@ -869,8 +873,10 @@ def _calc_angle_based_sync_score(cap_b, cap_t, pose_b, pose_t,
             if vb is None or vt is None or np.isnan(vb) or np.isnan(vt):
                 continue
                 
-            # 각도 차이 계산
-            diff = abs(float(vt) - float(vb))
+            # 각도 차이 계산 (360도 경계 고려)
+            angle_diff = abs(float(vt) - float(vb))
+            # 360도 경계 문제 해결: 180도보다 큰 차이는 360도에서 빼기
+            diff = min(angle_diff, 360.0 - angle_diff)
             # 점수 계산: 100 - (차이/최대차이) * 100
             score = 100.0 - (diff / max(1e-6, max_angle_diff)) * 100.0
             clipped_score = float(np.clip(score, 0.0, 100.0))
@@ -1009,7 +1015,10 @@ def _calculate_angle_similarity(angles1, angles2):
             a2 = angles2[joint_name]
             
             if a1 is not None and a2 is not None and not (np.isnan(a1) or np.isnan(a2)):
-                diff = abs(float(a1) - float(a2))
+                # 각도 차이 계산 (360도 경계 고려)
+                angle_diff = abs(float(a1) - float(a2))
+                # 360도 경계 문제 해결: 180도보다 큰 차이는 360도에서 빼기
+                diff = min(angle_diff, 360.0 - angle_diff)
                 total_diff += diff
                 valid_joints += 1
     
@@ -1448,8 +1457,10 @@ def calc_joint_angle_score(baseline_path: str, target_path: str,
                     # 유효성 검증
                     if vb is None or vt is None or np.isnan(vb) or np.isnan(vt):
                         continue
-                    # 각도 차이 계산
-                    diff = abs(float(vt) - float(vb))
+                    # 각도 차이 계산 (360도 경계 고려)
+                    angle_diff = abs(float(vt) - float(vb))
+                    # 360도 경계 문제 해결: 180도보다 큰 차이는 360도에서 빼기
+                    diff = min(angle_diff, 360.0 - angle_diff)
                     # 점수 계산: 100 - (차이/최대차이) * 100
                     score = 100.0 - (diff / max(1e-6, max_angle_diff)) * 100.0
                     clipped_score = float(np.clip(score, 0.0, 100.0))
@@ -1584,7 +1595,8 @@ def score_all(baseline_path: str, target_path: str, use_no_top_method: bool = Fa
                     break
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 result = pose.process(rgb)
-                landmarks_b.append(result.pose_landmarks)
+                # 포즈 추정 실패 시 None 추가 (예외 처리 강화)
+                landmarks_b.append(result.pose_landmarks if result.pose_landmarks else None)
             cap_b.release()
         
         # 타겟 영상 처리
@@ -1603,7 +1615,8 @@ def score_all(baseline_path: str, target_path: str, use_no_top_method: bool = Fa
                         break
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     result = pose.process(rgb)
-                    landmarks_t.append(result.pose_landmarks)
+                    # 포즈 추정 실패 시 None 추가 (예외 처리 강화)
+                    landmarks_t.append(result.pose_landmarks if result.pose_landmarks else None)
                 cap_t.release()
         
         # 웨글 제거: detect_swing_key_frames로 웨글 종료 지점 감지
@@ -1660,12 +1673,13 @@ def score_all(baseline_path: str, target_path: str, use_no_top_method: bool = Fa
         }
         fps_meta = {"baseline": fps_b, "target": fps_t}
         
-        # 3등분 궤적 기반 속도 점수 계산 (거리/시간 비율)
+        # 3등분 궤적 기반 속도 점수 계산 (대칭성 보장을 위한 양방향 계산)
         try:
             if same_file:
                 swing_speed_score, speed_meta = 100.0, {"reason": "identical_video_shortcircuit", "final_speed_score": 100.0}
             else:
-                swing_speed_score, speed_meta = calc_speed_score_three_segments_trajectory(
+                # 양방향 계산으로 대칭성 보장
+                score_1, meta_1 = calc_speed_score_three_segments_trajectory(
                     landmarks_b=landmarks_b,
                     landmarks_t=landmarks_t,
                     start_b=start_b,
@@ -1675,6 +1689,26 @@ def score_all(baseline_path: str, target_path: str, use_no_top_method: bool = Fa
                     fps_b=fps_b,
                     fps_t=fps_t,
                 )
+                score_2, meta_2 = calc_speed_score_three_segments_trajectory(
+                    landmarks_b=landmarks_t,  # 순서 바꿈
+                    landmarks_t=landmarks_b,
+                    start_b=start_t,
+                    finish_b=finish_t,
+                    start_t=start_b,
+                    finish_t=finish_b,
+                    fps_b=fps_t,
+                    fps_t=fps_b,
+                )
+                # 양방향 점수의 평균 사용 (대칭성 보장)
+                swing_speed_score = (score_1 + score_2) / 2.0
+                speed_meta = {
+                    "method": "three_segments_trajectory_symmetric",
+                    "direction_1": meta_1,
+                    "direction_2": meta_2,
+                    "final_speed_score": swing_speed_score,
+                    "symmetric_calculation": True
+                }
+                logger.info(f"[Speed-Score] 대칭성 보장: 방향1={score_1:.1f}, 방향2={score_2:.1f}, 평균={swing_speed_score:.1f}")
         except Exception as e:
             logger.error(f"[Speed-Score] FAILED - three_segments_trajectory 실패: {e}")
             logger.error(f"[Speed-Score] REASON - 세그먼트 궤적 기반 분석 오류")
@@ -1764,14 +1798,42 @@ def score_all(baseline_path: str, target_path: str, use_no_top_method: bool = Fa
             # 속도 점수 계산 실패 - 0점으로 설정
             swing_speed_score, speed_meta = 0.0, {"error": "speed_calculation_failed", "reason": str(e)}
     
-    # 관절 각도 점수 계산 (환경변수로 동기화 방식 제어)
+    # 관절 각도 점수 계산 (대칭성 보장을 위한 양방향 계산)
     use_angle_sync_env = os.getenv("USE_ANGLE_SYNC", "true").strip().lower()
     use_angle_sync = use_angle_sync_env in ("1", "true", "yes", "y")
     logger.info(f"[Angle-Detail] 동기화 방식: {'각도 기반' if use_angle_sync else '진행률 기반(1:1)'} (USE_ANGLE_SYNC={use_angle_sync_env})")
-    joint_angle_score = calc_joint_angle_score(
-        baseline_path, target_path, start_b, finish_b, start_t, finish_t,
-        use_angle_based_sync=use_angle_sync
-    )
+    
+    # 양방향 계산으로 대칭성 보장
+    try:
+        angle_score_1 = calc_joint_angle_score(
+            baseline_path, target_path, start_b, finish_b, start_t, finish_t,
+            use_angle_based_sync=use_angle_sync
+        )
+        angle_score_2 = calc_joint_angle_score(
+            target_path, baseline_path, start_t, finish_t, start_b, finish_b,  # 순서 바꿈
+            use_angle_based_sync=use_angle_sync
+        )
+        
+        if angle_score_1 is not None and angle_score_2 is not None:
+            # 대칭성 검증: 두 점수가 너무 다르면 경고
+            score_diff = abs(angle_score_1 - angle_score_2)
+            if score_diff > 10.0:  # 10점 이상 차이나면 경고
+                logger.warning(f"[Angle-Score] 대칭성 경고: 방향1={angle_score_1:.1f}, 방향2={angle_score_2:.1f}, 차이={score_diff:.1f}")
+            
+            joint_angle_score = (angle_score_1 + angle_score_2) / 2.0
+            logger.info(f"[Angle-Score] 대칭성 보장: 방향1={angle_score_1:.1f}, 방향2={angle_score_2:.1f}, 평균={joint_angle_score:.1f}")
+        elif angle_score_1 is not None:
+            joint_angle_score = angle_score_1
+            logger.warning(f"[Angle-Score] 방향2 계산 실패, 방향1만 사용: {joint_angle_score:.1f}")
+        elif angle_score_2 is not None:
+            joint_angle_score = angle_score_2
+            logger.warning(f"[Angle-Score] 방향1 계산 실패, 방향2만 사용: {joint_angle_score:.1f}")
+        else:
+            joint_angle_score = None
+            logger.error(f"[Angle-Score] 양방향 계산 모두 실패 - 포즈 추정 실패 가능성")
+    except Exception as e:
+        logger.error(f"[Angle-Score] 양방향 계산 중 예외 발생: {e}")
+        joint_angle_score = None
     
     # 관절 각도 점수 계산 실패 시 오류 처리
     if joint_angle_score is None:
