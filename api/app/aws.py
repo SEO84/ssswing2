@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # 환경변수에서 AWS 설정 로드 (dotenv는 main에서 로드)
 AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-2")           # AWS 리전 (기본값: 서울)
-AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET", "ssswing-videos")    # S3 버킷명
+AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET", "ssswing-sai")    # S3 버킷명
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")              # AWS 액세스 키
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")      # AWS 시크릿 키
 
@@ -142,12 +142,16 @@ def get_pro_templates() -> dict:
 
     try:
         # S3 pro/ 폴더 내 객체 목록 조회 (최대 200개)
+        logger.info(f"S3 버킷 {AWS_S3_BUCKET}의 pro/ 폴더에서 템플릿 목록 조회 중...")
         response = s3.list_objects_v2(Bucket=AWS_S3_BUCKET, Prefix='pro/', MaxKeys=200)
         templates: dict[str, str] = {}
+        
+        logger.info(f"S3 응답: {response}")
         
         # 각 객체를 순회하며 템플릿 정보 추출
         for obj in response.get('Contents', []):
             key = obj['Key']
+            logger.info(f"발견된 객체: {key}")
             
             # 폴더는 건너뛰기
             if key.endswith('/'):
@@ -155,23 +159,28 @@ def get_pro_templates() -> dict:
                 
             # 비디오 파일만 처리
             if not key.lower().endswith((".mp4", ".mov", ".mkv", ".avi")):
+                logger.info(f"비디오 파일이 아님, 건너뛰기: {key}")
                 continue
                 
             # 파일명에서 템플릿 ID 생성
             filename = key.split('/')[-1]
-            template_id = f"pro_{os.path.splitext(filename)[0].lower().replace(' ', '_')}"
+            template_id = f"pro_{os.path.splitext(filename)[0].lower().replace(' ', '_').replace('-', '_')}"
             templates[template_id] = key
+            logger.info(f"템플릿 추가: {template_id} -> {key}")
         
         # 템플릿이 없는 경우 기본 템플릿 제공
         if not templates:
+            logger.warning("S3에서 템플릿을 찾을 수 없습니다. 기본 템플릿을 사용합니다.")
             templates = {
                 'pro_driver_side': 'pro/Rory McIlroy driver.mp4'
             }
         
+        logger.info(f"최종 템플릿 목록: {templates}")
         return templates
         
     except Exception as e:
         logger.error(f"프로 템플릿 목록 가져오기 실패: {e}")
+        logger.error(f"에러 타입: {type(e)}")
         # 에러 발생 시 기본 템플릿 반환
         return {
             'pro_driver_side': 'pro/Rory McIlroy driver.mp4'

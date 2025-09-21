@@ -50,7 +50,7 @@ class Settings(BaseModel):
     환경 변수에서 설정값을 로드하며, 기본값을 제공합니다.
     """
     AWS_REGION: str = os.getenv("AWS_REGION", "ap-northeast-2")  # AWS 리전
-    AWS_S3_BUCKET: str = os.getenv("AWS_S3_BUCKET", "ssswing-videos")  # S3 버킷명
+    AWS_S3_BUCKET: str = os.getenv("AWS_S3_BUCKET", "ssswing-sai")  # S3 버킷명
     AWS_ACCESS_KEY_ID: str | None = os.getenv("AWS_ACCESS_KEY_ID")  # AWS 액세스 키
     AWS_SECRET_ACCESS_KEY: str | None = os.getenv("AWS_SECRET_ACCESS_KEY")  # AWS 시크릿 키
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6381/0")  # Redis 연결 URL
