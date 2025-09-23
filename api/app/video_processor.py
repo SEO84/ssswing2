@@ -33,7 +33,14 @@ def detect_waggle_and_swing_start(video_path: str, window_size: int = 10, moveme
 
     hand_x, hand_y, frame_idx = [], [], []
     camera_view = None
-    with mp_p.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
+    with mp_p.Pose(
+        static_image_mode=False,
+        model_complexity=2,
+        smooth_landmarks=True,
+        enable_segmentation=False,
+        min_detection_confidence=0.4,
+        min_tracking_confidence=0.4,
+    ) as pose:
         fi = 0
         while True:
             ret, frame = cap.read()
@@ -109,35 +116,69 @@ def detect_swing_key_frames(video_path: str):
     hand_x, hand_y, hand_z, frame_idx = [], [], [], []
     camera_view = None
     cap = cv2.VideoCapture(video_path)
-    # 최적화된 MediaPipe 설정 (속도 우선)
+    # MediaPipe 설정 (정확도 우선)
     with mp_p.Pose(
         static_image_mode=False,
-        model_complexity=1,  # 2에서 1로 변경 (속도 향상)
+        model_complexity=2,
         smooth_landmarks=True,
         enable_segmentation=False,
-        min_detection_confidence=0.6,  # 0.5에서 0.6으로 증가 (정확도 향상)
-        min_tracking_confidence=0.6    # 0.5에서 0.6으로 증가 (정확도 향상)
+        min_detection_confidence=0.4,
+        min_tracking_confidence=0.4
     ) as pose:
         fi = 0
-        # 프레임 샘플링으로 속도 향상 (매 2프레임마다 처리)
-        sample_rate = 2
+        prev_left_heel = None
+        prev_left_toe = None
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            
-            # 프레임 샘플링 적용
-            if fi % sample_rate == 0:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                result = pose.process(rgb)
-                if result.pose_landmarks:
-                    if camera_view is None:
-                        camera_view = detect_camera_view(result.pose_landmarks)
-                    rw = result.pose_landmarks.landmark[mp_p.PoseLandmark.RIGHT_WRIST]
-                    hand_x.append(rw.x)
-                    hand_y.append(rw.y)
-                    hand_z.append(getattr(rw, 'z', 0.0))
-                    frame_idx.append(fi)
+            # 입력 최소 해상도 보장(너비/높이 중 한 변이 480 미만이면 업샘플)
+            h, w = frame.shape[:2]
+            if max(h, w) < 640 or min(h, w) < 480:
+                scale = max(640 / max(h, w), 480 / max(1, min(h, w)))
+                frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
+
+            # 전처리: CLAHE(대비 향상) + 가우시안 블러(노이즈 완화)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            try:
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                enhanced = clahe.apply(gray)
+            except Exception:
+                enhanced = gray
+            enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+            enhanced_bgr = cv2.GaussianBlur(enhanced_bgr, (3, 3), 0)
+
+            rgb = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB)
+            result = pose.process(rgb)
+            if result.pose_landmarks:
+                if camera_view is None:
+                    camera_view = detect_camera_view(result.pose_landmarks)
+                rw = result.pose_landmarks.landmark[mp_p.PoseLandmark.RIGHT_WRIST]
+                # 왼발 힐/토 디버깅 로그 추가
+                try:
+                    lh = result.pose_landmarks.landmark[mp_p.PoseLandmark.LEFT_HEEL]
+                    lt = result.pose_landmarks.landmark[mp_p.PoseLandmark.LEFT_FOOT_INDEX]
+                    # 누락 시 이전 프레임 기반 보간/유지
+                    if getattr(lh, 'visibility', 0.0) < 0.4 and prev_left_heel is not None:
+                        lh.x = prev_left_heel.x if getattr(lh, 'x', None) is None else (prev_left_heel.x + lh.x) / 2.0
+                        lh.y = prev_left_heel.y if getattr(lh, 'y', None) is None else (prev_left_heel.y + lh.y) / 2.0
+                        lh.visibility = max(lh.visibility, prev_left_heel.visibility)
+                    if getattr(lt, 'visibility', 0.0) < 0.4 and prev_left_toe is not None:
+                        lt.x = prev_left_toe.x if getattr(lt, 'x', None) is None else (prev_left_toe.x + lt.x) / 2.0
+                        lt.y = prev_left_toe.y if getattr(lt, 'y', None) is None else (prev_left_toe.y + lt.y) / 2.0
+                        lt.visibility = max(lt.visibility, prev_left_toe.visibility)
+                    prev_left_heel = lh
+                    prev_left_toe = lt
+                    print(f"[LeftFoot] f={fi} heel vis={getattr(lh,'visibility',0):.2f} x={lh.x:.3f} y={lh.y:.3f} | toe vis={getattr(lt,'visibility',0):.2f} x={lt.x:.3f} y={lt.y:.3f}")
+                    if getattr(lh, 'visibility', 0.0) < 0.5:
+                        print("[LeftFoot][WARN] Left Heel visibility < 0.5 → 가림/조명/해상도 점검 필요")
+                except Exception:
+                    pass
+
+                hand_x.append(rw.x)
+                hand_y.append(rw.y)
+                hand_z.append(getattr(rw, 'z', 0.0))
+                frame_idx.append(fi)
             fi += 1
     cap.release()
 
@@ -165,18 +206,15 @@ def detect_swing_key_frames(video_path: str):
         vy = np.zeros_like(y_seg)
         vz = np.zeros_like(z_seg)
 
-    def _smooth(arr: np.ndarray, k: int = 5) -> np.ndarray:
-        if k <= 1:
+    # 가우시안 스무딩 적용 (지터 완화)
+    def _gaussian_smooth(arr: np.ndarray, sigma: float = 1.0) -> np.ndarray:
+        if arr.size == 0:
             return arr
-        kernel = np.ones(k, dtype=float) / float(k)
-        return np.convolve(arr, kernel, mode='same')
-
-    def _smooth_local(arr: np.ndarray, k: int = 5) -> np.ndarray:
-        if k <= 1:
-            return arr
-        kernel = np.ones(k, dtype=float) / float(k)
-        return np.convolve(arr, kernel, mode='same')
-    vx_s, vy_s = _smooth_local(vx, 5), _smooth_local(vy, 5)
+        # OpenCV GaussianBlur는 2D 입력이 필요 → (N,1)로 확장 후 복원
+        a2 = arr.reshape(-1, 1).astype(np.float32)
+        sm = cv2.GaussianBlur(a2, (5, 1), sigmaX=sigma, sigmaY=0)
+        return sm.reshape(-1)
+    vx_s, vy_s = _gaussian_smooth(vx, 1.0), _gaussian_smooth(vy, 1.0)
 
     if camera_view == 'front':
         rel0 = int(np.argmin(y_seg)) if y_seg.size else 0
@@ -278,7 +316,14 @@ def detect_swing_key_frames_from(video_path: str, start_abs: int):
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     hand_x, hand_y, frame_idx = [], [], []
     camera_view = None
-    with mp_p.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
+    with mp_p.Pose(
+        static_image_mode=False,
+        model_complexity=2,
+        smooth_landmarks=True,
+        enable_segmentation=False,
+        min_detection_confidence=0.4,
+        min_tracking_confidence=0.4,
+    ) as pose:
         fi = 0
         while True:
             ret, frame = cap.read()
@@ -651,7 +696,14 @@ def _compute_right_arm_angles(video_path: str, global_frame_idx: int) -> tuple[f
         # BGR을 RGB로 변환
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        with mp_p.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
+        with mp_p.Pose(
+            static_image_mode=False,
+            model_complexity=2,
+            smooth_landmarks=True,
+            enable_segmentation=False,
+            min_detection_confidence=0.4,
+            min_tracking_confidence=0.4,
+        ) as pose:
             # 포즈 랜드마크 검출
             result = pose.process(rgb)
             if not result.pose_landmarks:

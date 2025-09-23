@@ -15,10 +15,154 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import os
 from .math_utils import robust_argmin, robust_argmax, calculate_velocity_profile, find_swing_phases_by_velocity
 
 mp_pose = mp.solutions.pose
 pose_landmark_enum = mp.solutions.pose.PoseLandmark
+
+# 환경변수 기반 튜닝 포인트 (필요 시 조정)
+POSE_LONG_SIDE = int(os.getenv("POSE_LONG_SIDE", "1280"))  # 입력 프레임 업샘플 기준 긴 변(px)
+POSE_MIN_DET = float(os.getenv("POSE_MIN_DET", "0.5"))     # 1차 트래킹 모드 detection 임계
+POSE_MIN_TRK = float(os.getenv("POSE_MIN_TRK", "0.5"))     # 1차 트래킹 모드 tracking 임계
+POSE_MODEL_COMPLEXITY = int(os.getenv("POSE_MODEL_COMPLEXITY", "2"))  # 0: lite, 1: full, 2: heavy
+
+# 발 가시성 기준 및 재검출 조건
+FOOT_VIS_THRESHOLD = float(os.getenv("POSE_FOOT_VISIBILITY", "0.4"))  # 제안: 0.3~0.4
+LEFTFOOT_REQUIRED_POINTS = int(os.getenv("POSE_LEFTFOOT_REQUIRED_POINTS", "2"))  # 27/29/31 중 만족해야 하는 개수
+REDETECT_STREAK = int(os.getenv("POSE_REDETECT_STREAK", "3"))          # 연속 소실 프레임 수 임계
+LOWER_ROI_RATIO = float(os.getenv("POSE_LOWER_ROI_RATIO", "0.45"))     # 하체 ROI 높이 비율(하단부터)
+
+# 스무딩 윈도우 (1이면 비활성)
+SMOOTH_WINDOW = int(os.getenv("POSE_SMOOTH_WINDOW", "3"))
+
+
+class SimpleLandmark:
+    """
+    MediaPipe NormalizedLandmark 대체용 간단 구조체.
+    ROI 기반 재투영 이후 전체 프레임 정규 좌표계로 매핑할 때 사용.
+    """
+    __slots__ = ("x", "y", "z", "visibility")
+
+    def __init__(self, x: float, y: float, z: float = 0.0, visibility: float = 0.0):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.visibility = visibility
+
+
+def _resize_to_long_side(frame: np.ndarray, target_long_side: int) -> np.ndarray:
+    """
+    긴 변 기준으로 프레임을 리사이즈(업샘플 포함)합니다.
+    비율은 유지합니다.
+    """
+    h, w = frame.shape[:2]
+    if max(h, w) == target_long_side:
+        return frame
+    if h >= w:
+        scale = target_long_side / float(h)
+    else:
+        scale = target_long_side / float(w)
+    new_w = int(round(w * scale))
+    new_h = int(round(h * scale))
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+
+def _is_left_foot_confident(landmarks) -> bool:
+    """
+    왼발 핵심 포인트(발목 27, 뒤꿈치 29, 검지 31)의 유효/가시성 확인.
+    3점 중 LEFTFOOT_REQUIRED_POINTS 이상 충족 시 신뢰 OK로 간주.
+    """
+    try:
+        idxs = [27, 29, 31]
+        ok = 0
+        for i in idxs:
+            lm = landmarks[i]
+            if lm is None:
+                continue
+            vis = getattr(lm, "visibility", 0.0)
+            x = getattr(lm, "x", None)
+            y = getattr(lm, "y", None)
+            if x is None or y is None:
+                continue
+            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                continue
+            if vis >= FOOT_VIS_THRESHOLD:
+                ok += 1
+        return ok >= max(1, LEFTFOOT_REQUIRED_POINTS)
+    except Exception:
+        return False
+
+
+def _remap_roi_landmarks_to_full(roi_landmarks, roi_xywh, full_w, full_h):
+    """
+    ROI에서 검출된 정규화 좌표(0..1)를 전체 프레임 정규화 좌표(0..1)로 매핑.
+    """
+    rx, ry, rw, rh = roi_xywh
+    out = []
+    for lm in roi_landmarks:
+        if lm is None:
+            out.append(None)
+            continue
+        x_full = (lm.x * rw + rx) / max(1.0, full_w)
+        y_full = (lm.y * rh + ry) / max(1.0, full_h)
+        out.append(SimpleLandmark(x_full, y_full, getattr(lm, "z", 0.0), getattr(lm, "visibility", 0.0)))
+    return out
+
+
+def _get_lower_body_bbox(landmarks, frame_w: int, frame_h: int, margin: float = 0.08):
+    """
+    마지막 유효 프레임의 하체(엉덩이/무릎/발목) 좌표를 이용해 바운딩박스 추정.
+    margin 비율로 여유를 두고, 화면 범위로 클램프합니다.
+    """
+    if not landmarks:
+        return None
+    idxs = [23, 24, 25, 26, 27, 28]  # 좌우 엉덩이/무릎/발목
+    xs = []
+    ys = []
+    for i in idxs:
+        lm = landmarks[i] if i < len(landmarks) else None
+        if lm is None:
+            continue
+        x = getattr(lm, "x", None)
+        y = getattr(lm, "y", None)
+        if x is None or y is None:
+            continue
+        xs.append(x * frame_w)
+        ys.append(y * frame_h)
+    if not xs or not ys:
+        return None
+    x1 = max(0, int(min(xs)))
+    x2 = min(frame_w - 1, int(max(xs)))
+    y1 = max(0, int(min(ys)))
+    y2 = min(frame_h - 1, int(max(ys)))
+    # 약간 확장, 특히 아래쪽으로 더 여유
+    mx = int(round((x2 - x1 + 1) * margin))
+    my = int(round((y2 - y1 + 1) * (margin * 1.5)))
+    x1 = max(0, x1 - mx)
+    x2 = min(frame_w - 1, x2 + mx)
+    y1 = max(0, y1 - my)
+    y2 = min(frame_h - 1, y2 + my * 2)
+    return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
+
+
+def _enhance_contrast_sharpen(bgr_img: np.ndarray) -> np.ndarray:
+    """
+    ROI 대비 강화: CLAHE(L 채널) + 언샤프 마스크 적용.
+    """
+    try:
+        lab = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l2 = clahe.apply(l)
+        lab2 = cv2.merge((l2, a, b))
+        enh = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+        # 언샤프: 가우시안 블러 후 가중 합성
+        blur = cv2.GaussianBlur(enh, (0, 0), sigmaX=1.0)
+        sharp = cv2.addWeighted(enh, 1.5, blur, -0.5, 0)
+        return sharp
+    except Exception:
+        return bgr_img
 
 
 def extract_landmarks_from_video(video_path):
@@ -32,7 +176,17 @@ def extract_landmarks_from_video(video_path):
     Returns:
         tuple: (landmarks_list, global_video_aspect_ratio)
     """
-    pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7)  # confidence 높임 (세로 영상 안정화)
+    # 1차: 트래킹 모드(영상용) 포즈 추정기 (세그멘테이션 활성화)
+    pose = mp_pose.Pose(
+        static_image_mode=False,
+        min_detection_confidence=POSE_MIN_DET,
+        min_tracking_confidence=POSE_MIN_TRK,
+        model_complexity=POSE_MODEL_COMPLEXITY,
+        enable_segmentation=True,
+        smooth_segmentation=True,
+    )
+    # 2차: 정적(고정) 모드 재검출기 (필요 시 on-demand 생성)
+    pose_static = None
     cap = cv2.VideoCapture(video_path)
     
     # 실제 영상 비율 계산
@@ -42,6 +196,8 @@ def extract_landmarks_from_video(video_path):
     print(f"[INFO] Detected video aspect ratio: {global_video_aspect_ratio:.2f}")
     
     landmarks_list = []
+    missing_streak = 0
+    last_good_lower = None  # 마지막으로 왼발 신뢰 OK였던 프레임의 하체 landmarks 보관
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -51,16 +207,124 @@ def extract_landmarks_from_video(video_path):
         if global_video_aspect_ratio < 1.0:  # height > width
             frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)  # 시계방향 90도 회전 (세로 -> 가로)
             print(f"[DEBUG] Rotated frame for portrait video")
-        
-        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # 입력 업샘플 (긴 변 기준)
+        proc_frame = _resize_to_long_side(frame, POSE_LONG_SIDE)
+
+        image = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
         results = pose.process(image)
+
+        # 1차 결과
         if results.pose_landmarks:
-            landmarks_list.append(results.pose_landmarks.landmark)
+            current_landmarks = results.pose_landmarks.landmark
         else:
-            landmarks_list.append([None]*33)
+            current_landmarks = [None] * 33
+
+        # 왼발 신뢰도 평가 및 연속 소실 카운트
+        if not _is_left_foot_confident(current_landmarks):
+            missing_streak += 1
+        else:
+            missing_streak = 0
+            # 마지막 유효 하체 landmarks 캐시
+            try:
+                last_good_lower = [
+                    current_landmarks[i] if i < len(current_landmarks) else None
+                    for i in range(33)
+                ]
+            except Exception:
+                pass
+
+        # 연속 소실 시: 정적(heavy) 재검출 시도
+        if missing_streak >= REDETECT_STREAK:
+            try:
+                if pose_static is None:
+                    pose_static = mp_pose.Pose(
+                        static_image_mode=True,
+                        min_detection_confidence=0.3,  # 제안값: 낮춰서 더 많이 탐지
+                        min_tracking_confidence=0.3,
+                        model_complexity=2,
+                        enable_segmentation=True,
+                        smooth_segmentation=True,
+                    )
+
+                # 2-1) 전체 프레임 재검출
+                re_results = pose_static.process(image)
+                if re_results and re_results.pose_landmarks:
+                    re_landmarks = re_results.pose_landmarks.landmark
+                else:
+                    re_landmarks = None
+
+                # 2-2) 하체 ROI 폴백 (하단 영역 확대)
+                if (re_landmarks is None) or (not _is_left_foot_confident(re_landmarks)):
+                    h2, w2 = proc_frame.shape[:2]
+                    # 마지막 유효 하체 기준 ROI 우선, 없으면 하단 고정 ROI 사용
+                    xywh = _get_lower_body_bbox(last_good_lower, w2, h2, margin=0.1) if last_good_lower else None
+                    if xywh is None:
+                        roi_h = int(round(h2 * LOWER_ROI_RATIO))
+                        roi_y = h2 - roi_h
+                        roi_x = 0
+                        roi_w = w2
+                    else:
+                        roi_x, roi_y, roi_w, roi_h = xywh
+                        # 프레임 하단과 겹치도록 조금 아래로 내림(가능한 경우)
+                        shift = int(round(roi_h * 0.2))
+                        roi_y = min(max(0, roi_y + shift), h2 - roi_h)
+
+                    lower_roi = proc_frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
+                    lower_roi = _enhance_contrast_sharpen(lower_roi)
+                    # ROI 자체도 업샘플 1.5배
+                    scale = 1.6
+                    roi_resized = cv2.resize(lower_roi, (int(roi_w * scale), int(roi_h * scale)), interpolation=cv2.INTER_CUBIC)
+                    roi_img = cv2.cvtColor(roi_resized, cv2.COLOR_BGR2RGB)
+                    re2 = pose_static.process(roi_img)
+                    if re2 and re2.pose_landmarks:
+                        # ROI 정규좌표 → 전체 프레임 정규좌표로 매핑
+                        re2_lm = re2.pose_landmarks.landmark
+                        # ROI가 리사이즈 되었으므로, 정규좌표는 리사이즈된 ROI 기준. 먼저 리사이즈 기준을 원 ROI로 역스케일
+                        # 정규좌표(0..1)는 크기 상관 없이 동일하게 해석되므로, 리사이즈의 영향은 없음. 정규좌표*원ROI폭/높이로 환산 후 전체로 투영.
+                        remapped = _remap_roi_landmarks_to_full(
+                            re2_lm,
+                            (roi_x, roi_y, roi_w, roi_h),
+                            w2, h2,
+                        )
+                        # 재검증
+                        if _is_left_foot_confident(remapped):
+                            current_landmarks = remapped
+                            missing_streak = 0
+                        else:
+                            # 최종 실패 시 기존 결과 유지
+                            pass
+                    elif re_landmarks is not None and _is_left_foot_confident(re_landmarks):
+                        current_landmarks = re_landmarks
+                        missing_streak = 0
+                else:
+                    if _is_left_foot_confident(re_landmarks):
+                        current_landmarks = re_landmarks
+                        missing_streak = 0
+            except Exception:
+                # 재검출 실패는 무시하고 1차 결과 사용
+                pass
+
+        landmarks_list.append(current_landmarks)
     
     cap.release()
-    pose.close()
+    try:
+        pose.close()
+    except Exception:
+        pass
+    if pose_static is not None:
+        try:
+            pose_static.close()
+        except Exception:
+            pass
+
+    # 스무딩(기본 활성화; 윈도우 1이면 비활성)
+    if SMOOTH_WINDOW and SMOOTH_WINDOW > 1:
+        try:
+            landmarks_list = smooth_landmarks_data(landmarks_list, window_size=SMOOTH_WINDOW)
+        except Exception:
+            # 스무딩 실패 시 원본 반환
+            pass
+
     return landmarks_list, global_video_aspect_ratio  # aspect_ratio 반환 추가
 
 

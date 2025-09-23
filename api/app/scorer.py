@@ -760,6 +760,8 @@ def _extract_angles_per_frame(image, pose) -> dict | None:
     # 랜드마크 좌표 추출
     lm = result.pose_landmarks.landmark
 
+    # 이전 동작으로 되돌림: 시점별 왼발 제외 로직 제거
+
     def p(idx):
         """
         랜드마크 인덱스에 해당하는 정규화된 좌표 반환
