@@ -34,17 +34,23 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")              # AWS 액세스 
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")      # AWS 시크릿 키
 
 # AWS 인증 정보가 있을 때만 S3 클라이언트 생성
-if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
-    # boto3 S3 클라이언트 생성
-    s3 = boto3.client(
-        's3',                                    # S3 서비스
-        region_name=AWS_REGION,                  # 리전 설정
-        aws_access_key_id=AWS_ACCESS_KEY_ID,     # 액세스 키
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,  # 시크릿 키
-        config=Config(signature_version='s3v4')  # S3v4 서명 버전 사용
-    )
-else:
-    # 인증 정보가 없는 경우 (개발 환경)
+# EC2 IAM 역할도 지원 (키 없이도 자동 인증)
+try:
+    if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+        # boto3 S3 클라이언트 생성 (명시적 키)
+        s3 = boto3.client(
+            's3',                                    # S3 서비스
+            region_name=AWS_REGION,                  # 리전 설정
+            aws_access_key_id=AWS_ACCESS_KEY_ID,     # 액세스 키
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,  # 시크릿 키
+            config=Config(signature_version='s3v4')  # S3v4 서명 버전 사용
+        )
+    else:
+        # EC2 IAM 역할 또는 기본 자격증명 체인 사용
+        s3 = boto3.client('s3', region_name=AWS_REGION, config=Config(signature_version='s3v4'))
+        logger.info("EC2 IAM 역할 또는 기본 자격증명으로 S3 클라이언트 생성")
+except Exception as e:
+    logger.error(f"S3 클라이언트 생성 실패: {e}")
     s3 = None
 
 

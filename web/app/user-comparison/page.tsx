@@ -199,29 +199,59 @@ export default function UserComparisonPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 p-6">
-      <div className="max-w-7xl mx-auto">
-        {/* 헤더 */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-4">
-            🏌️‍♂️ 사용자 영상 비교 분석
-          </h1>
-          <p className="text-lg text-gray-600">
-            두 개의 골프 스윙 영상을 업로드하여 상세한 비교 분석을 받아보세요
-          </p>
+    <div className="min-h-screen relative overflow-hidden">
+      {/* 인터랙티브 배경 */}
+      <div className="fixed inset-0 z-0">
+        {/* 다크 배경 그라데이션 */}
+        <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-black to-gray-800"></div>
+        
+        {/* 다크 텍스처 오버레이 */}
+        <div className="absolute inset-0 opacity-30">
+          <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-b from-transparent via-gray-800/20 to-gray-900/40"></div>
         </div>
+        
+        {/* 미니멀한 배경 요소 */}
+        <div className="absolute inset-0 overflow-hidden">
+          {/* 단순한 그라데이션 원형들 */}
+          <div className="absolute top-1/4 right-1/4 w-64 h-64 bg-gradient-to-br from-green-500/5 to-transparent rounded-full blur-3xl"></div>
+          <div className="absolute bottom-1/4 left-1/4 w-80 h-80 bg-gradient-to-br from-blue-500/5 to-transparent rounded-full blur-3xl"></div>
+          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-gradient-to-br from-purple-500/3 to-transparent rounded-full blur-3xl"></div>
+        </div>
+      </div>
+
+      {/* 헤더 섹션 */}
+      <div className="relative z-20 bg-black/80 backdrop-blur-sm shadow-sm border-b border-gray-800">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">사용자 영상 비교 분석</h1>
+                <p className="text-sm text-gray-400">두 개의 골프 스윙 영상을 업로드하여 상세한 비교 분석을 받아보세요</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 메인 콘텐츠 */}
+      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
 
         {/* 분석 폼 */}
         {!analysisResult && (
-          <div className="bg-white rounded-2xl shadow-xl p-8 mb-8">
-            <h2 className="text-2xl font-semibold text-gray-800 mb-6">
+          <div className="bg-white/10 backdrop-blur-sm rounded-3xl border border-white/20 shadow-xl p-8 mb-8">
+            <h2 className="text-2xl font-semibold text-white mb-6">
               📹 영상 업로드 및 분석 설정
             </h2>
             
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-6">
               {/* 첫 번째 영상 업로드 */}
               <div className="space-y-4">
-                <h3 className="text-lg font-medium text-gray-700">
+                <h3 className="text-lg font-medium text-white">
                   🎯 첫 번째 영상 (기준)
                 </h3>
                 <UploadArea
@@ -239,7 +269,7 @@ export default function UserComparisonPage() {
 
               {/* 두 번째 영상 업로드 */}
               <div className="space-y-4">
-                <h3 className="text-lg font-medium text-gray-700">
+                <h3 className="text-lg font-medium text-white">
                   🎯 두 번째 영상 (비교)
                 </h3>
                 <UploadArea
@@ -259,7 +289,7 @@ export default function UserComparisonPage() {
              {/* 분석 시작 버튼 */}
              <div className="text-center">
                {/* 디버깅 정보 */}
-               <div className="mb-4 p-3 bg-gray-100 rounded-lg text-sm text-gray-600">
+               <div className="mb-4 p-3 bg-white/10 backdrop-blur-sm rounded-lg text-sm text-gray-300 border border-white/20">
                  <p><strong>첫 번째 영상:</strong> {video1 ? `✅ ${video1.name}` : '❌ 없음'}</p>
                  <p><strong>두 번째 영상:</strong> {video2 ? `✅ ${video2.name}` : '❌ 없음'}</p>
                </div>
@@ -284,7 +314,7 @@ export default function UserComparisonPage() {
               
               {/* 버튼 비활성화 이유 표시 */}
               {(!video1 || !video2) && (
-                <div className="mt-2 text-sm text-gray-500">
+                <div className="mt-2 text-sm text-gray-400">
                   {!video1 && !video2 && '두 개의 영상을 모두 업로드해주세요.'}
                   {video1 && !video2 && '두 번째 영상을 업로드해주세요.'}
                   {!video1 && video2 && '첫 번째 영상을 업로드해주세요.'}
@@ -294,12 +324,12 @@ export default function UserComparisonPage() {
 
             {/* 오류 메시지 */}
             {error && (
-              <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-                <p className="text-red-600 text-center">{error}</p>
+              <div className="mt-4 p-4 bg-red-500/20 backdrop-blur-sm border border-red-400/30 rounded-lg">
+                <p className="text-red-300 text-center">{error}</p>
                 {analysisId && (
-                  <div className="mt-2 text-sm text-gray-600 text-center">
+                  <div className="mt-2 text-sm text-gray-300 text-center">
                     <p>분석 ID: {analysisId}</p>
-                    <p>디버깅 정보: <a href={`${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/debug/analysis/${analysisId}`} target="_blank" className="text-blue-600 hover:underline">Redis 데이터 확인</a></p>
+                    <p>디버깅 정보: <a href={`${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/debug/analysis/${analysisId}`} target="_blank" className="text-blue-400 hover:underline">Redis 데이터 확인</a></p>
                   </div>
                 )}
               </div>
@@ -311,48 +341,67 @@ export default function UserComparisonPage() {
         {analysisResult && (
           <div className="space-y-8">
             {/* 점수 결과 */}
-            <div className="bg-white rounded-2xl shadow-xl p-8">
-              <h2 className="text-2xl font-semibold text-gray-800 mb-6">
+            <div className="bg-white/10 backdrop-blur-sm rounded-3xl border border-white/20 shadow-xl p-8">
+              <h2 className="text-2xl font-semibold text-white mb-6">
                 📊 분석 결과
               </h2>
               
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                <div className="text-center p-6 bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl">
-                  <div className="text-3xl font-bold text-blue-600 mb-2">
+                <div className="text-center p-6 bg-gradient-to-br from-blue-500/20 to-blue-600/30 backdrop-blur-sm rounded-xl border border-blue-400/30">
+                  <div className="text-3xl font-bold text-blue-300 mb-2">
                     {analysisResult.scores?.angle_score?.toFixed(1)}%
                   </div>
-                  <div className="text-sm text-blue-700">관절 각도 점수</div>
+                  <div className="text-sm text-blue-200">관절 각도 점수</div>
                 </div>
                 
-                <div className="text-center p-6 bg-gradient-to-br from-green-50 to-green-100 rounded-xl">
-                  <div className="text-3xl font-bold text-green-600 mb-2">
+                <div className="text-center p-6 bg-gradient-to-br from-green-500/20 to-green-600/30 backdrop-blur-sm rounded-xl border border-green-400/30">
+                  <div className="text-3xl font-bold text-green-300 mb-2">
                     {analysisResult.scores?.speed_score?.toFixed(1)}%
                   </div>
-                  <div className="text-sm text-green-700">속도 타이밍 점수</div>
+                  <div className="text-sm text-green-200">속도 타이밍 점수</div>
                 </div>
                 
-                <div className="text-center p-6 bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl">
-                  <div className="text-3xl font-bold text-purple-600 mb-2">
+                <div className="text-center p-6 bg-gradient-to-br from-purple-500/20 to-purple-600/30 backdrop-blur-sm rounded-xl border border-purple-400/30">
+                  <div className="text-3xl font-bold text-purple-300 mb-2">
                     {analysisResult.scores?.final_score?.toFixed(1)}%
                   </div>
-                  <div className="text-sm text-purple-700">최종 종합 점수</div>
+                  <div className="text-sm text-purple-200">최종 종합 점수</div>
                 </div>
               </div>
 
-              <div className="text-center">
-                <button
-                  onClick={resetAnalysis}
-                  className="px-6 py-3 bg-gray-500 text-white font-medium rounded-lg hover:bg-gray-600 transition-colors duration-200"
-                >
-                  🔄 새로운 분석 시작하기
-                </button>
+              <div className="text-center space-y-4">
+                {/* 네비게이션 버튼들 */}
+                <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+                  <a
+                    href="/"
+                    className="px-6 py-3 bg-gradient-to-r from-green-500 to-blue-600 text-white font-medium rounded-lg hover:from-green-600 hover:to-blue-700 transition-all duration-200 transform hover:scale-105 shadow-lg"
+                  >
+                    🏠 홈으로 돌아가기
+                  </a>
+                  <a
+                    href="/pro-comparison"
+                    className="px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-medium rounded-lg hover:from-blue-600 hover:to-purple-700 transition-all duration-200 transform hover:scale-105 shadow-lg"
+                  >
+                    🏆 프로 비교 분석
+                  </a>
+                </div>
+                
+                {/* 현재 분석 재시작 버튼 */}
+                <div className="pt-4 border-t border-white/20">
+                  <button
+                    onClick={resetAnalysis}
+                    className="px-6 py-3 bg-white/10 backdrop-blur-sm text-white font-medium rounded-lg hover:bg-white/20 border border-white/30 transition-all duration-200"
+                  >
+                    🔄 새로운 사용자 비교 분석
+                  </button>
+                </div>
               </div>
             </div>
 
             {/* 서버 합성 영상 자동 재생 미리보기 */}
             {analysisResult.comparisonVideoUrl && (
-              <div className="bg-white rounded-2xl shadow-xl p-8">
-                <h3 className="text-xl font-semibold text-gray-800 mb-4">🎬 합성 영상 미리보기</h3>
+              <div className="bg-white/10 backdrop-blur-sm rounded-3xl border border-white/20 shadow-xl p-8">
+                <h3 className="text-xl font-semibold text-white mb-4">🎬 합성 영상 미리보기</h3>
                 {(() => {
                   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
                   const mp4Url = `${apiBase}/download/combined/${analysisResult.analysisId}`
@@ -380,7 +429,7 @@ export default function UserComparisonPage() {
                         {/* 브라우저가 지원하지 않을 때 대체 텍스트 */}
                         브라우저가 HTML5 비디오를 지원하지 않습니다.
                       </video>
-                      <p className="mt-2 text-xs text-gray-500">자동 재생 중입니다. 소리가 필요하면 음소거를 해제하세요.</p>
+                      <p className="mt-2 text-xs text-gray-400">자동 재생 중입니다. 소리가 필요하면 음소거를 해제하세요.</p>
                     </div>
                   )
                 })()}
@@ -389,12 +438,12 @@ export default function UserComparisonPage() {
 
             {/* 스켈레톤 비교 */}
             {analysisResult.userPoses && analysisResult.comparisonPoses && (
-              <div className="bg-white rounded-2xl shadow-xl p-8">
-                <h3 className="text-xl font-semibold text-gray-800 mb-4">
+              <div className="bg-white/10 backdrop-blur-sm rounded-3xl border border-white/20 shadow-xl p-8">
+                <h3 className="text-xl font-semibold text-white mb-4">
                   🦴 포즈 스켈레톤 비교
                 </h3>
                 {/* 디버깅 정보 */}
-                <div className="mb-4 p-3 bg-gray-100 rounded-lg text-sm text-gray-600">
+                <div className="mb-4 p-3 bg-white/10 backdrop-blur-sm rounded-lg text-sm text-gray-300 border border-white/20">
                   <p><strong>첫 번째 영상:</strong> {video1 ? `✅ ${video1.name}` : '❌ 없음'}</p>
                   <p><strong>두 번째 영상:</strong> {video2 ? `✅ ${video2.name}` : '❌ 없음'}</p>
                   <p><strong>사용자 포즈 데이터:</strong> {analysisResult.userPoses ? `✅ ${analysisResult.userPoses.length}개 프레임` : '❌ 없음'}</p>
@@ -411,8 +460,8 @@ export default function UserComparisonPage() {
 
             {/* 비교 영상 다운로드 */}
             {analysisResult.comparisonVideoUrl && (
-              <div className="bg-white rounded-2xl shadow-xl p-8">
-                <h3 className="text-xl font-semibold text-gray-800 mb-4">
+              <div className="bg-white/10 backdrop-blur-sm rounded-3xl border border-white/20 shadow-xl p-8">
+                <h3 className="text-xl font-semibold text-white mb-4">
                   🎬 비교 영상 다운로드
                 </h3>
                 {(() => {

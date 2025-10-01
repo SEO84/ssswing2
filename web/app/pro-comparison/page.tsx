@@ -78,51 +78,85 @@ export default function ProComparisonStartPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-50 via-blue-50 to-emerald-50">
-      <div className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-green-600 to-blue-600 bg-clip-text text-transparent">프로 비교 분석</h1>
-          <p className="text-sm text-gray-500">내 영상을 업로드하고, 선택한 프로 스윙과 비교 분석합니다</p>
+    <div className="min-h-screen relative overflow-hidden">
+      {/* 인터랙티브 배경 */}
+      <div className="fixed inset-0 z-0">
+        {/* 다크 배경 그라데이션 */}
+        <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-black to-gray-800"></div>
+        
+        {/* 다크 텍스처 오버레이 */}
+        <div className="absolute inset-0 opacity-30">
+          <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-b from-transparent via-gray-800/20 to-gray-900/40"></div>
+        </div>
+        
+        {/* 미니멀한 배경 요소 */}
+        <div className="absolute inset-0 overflow-hidden">
+          {/* 단순한 그라데이션 원형들 */}
+          <div className="absolute top-1/4 right-1/4 w-64 h-64 bg-gradient-to-br from-green-500/5 to-transparent rounded-full blur-3xl"></div>
+          <div className="absolute bottom-1/4 left-1/4 w-80 h-80 bg-gradient-to-br from-blue-500/5 to-transparent rounded-full blur-3xl"></div>
+          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-gradient-to-br from-purple-500/3 to-transparent rounded-full blur-3xl"></div>
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      {/* 헤더 섹션 */}
+      <div className="relative z-20 bg-black/80 backdrop-blur-sm shadow-sm border-b border-gray-800">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-gradient-to-r from-green-500 to-blue-600 rounded-lg flex items-center justify-center">
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold bg-gradient-to-r from-green-400 to-blue-400 bg-clip-text text-transparent">프로 비교 분석</h1>
+                <p className="text-sm text-gray-400">내 영상을 업로드하고, 선택한 프로 스윙과 비교 분석합니다</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 메인 콘텐츠 */}
+      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 md:py-10">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 sm:gap-8">
           <div className="lg:col-span-2">
-            <div className="bg-white rounded-2xl border border-gray-200 p-8">
+            <div className="bg-white/10 backdrop-blur-sm rounded-2xl sm:rounded-3xl border border-white/20 p-4 sm:p-6 md:p-8">
               <UploadArea onFileUpload={setSelectedFile} onUploaded={setUploaded} />
             </div>
           </div>
-          <div className="space-y-6">
-            <div className="bg-white rounded-2xl border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">프로 템플릿 선택</h3>
+          <div className="space-y-4 sm:space-y-6">
+            <div className="bg-white/10 backdrop-blur-sm rounded-2xl sm:rounded-3xl border border-white/20 p-4 sm:p-6">
+              <h3 className="text-base sm:text-lg font-semibold text-white mb-3 sm:mb-4">프로 템플릿 선택</h3>
               {loadingTemplates ? (
-                <div className="text-sm text-gray-500">템플릿 로딩 중...</div>
+                <div className="text-xs sm:text-sm text-gray-400">템플릿 로딩 중...</div>
+              ) : proTemplates.length === 0 ? (
+                <div className="text-xs sm:text-sm text-red-400">템플릿을 불러올 수 없습니다. S3 연결을 확인하세요.</div>
               ) : (
                 <>
                   <select
                     value={selectedPro}
                     onChange={(e) => setSelectedPro(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl p-3 bg-gray-50 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all duration-200"
+                    className="w-full border border-white/30 rounded-xl p-2 sm:p-3 text-sm sm:text-base bg-white/10 backdrop-blur-sm text-white focus:bg-white/20 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/50 transition-all duration-200"
                   >
                     {proTemplates.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
+                      <option key={p.id} value={p.id} className="bg-gray-800 text-white">{p.name}</option>
                     ))}
                   </select>
                   {selectedPro && (
-                    <div className="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-200 text-sm text-blue-800">
+                    <div className="mt-2 sm:mt-3 p-2 sm:p-3 bg-blue-500/20 backdrop-blur-sm rounded-lg border border-blue-400/30 text-xs sm:text-sm text-blue-200">
                       선택된 템플릿: {proTemplates.find(p => p.id === selectedPro)?.description}
                     </div>
                   )}
                 </>
               )}
-              <p className="text-sm text-gray-500 mt-2">비교할 프로 스윙을 선택해주세요</p>
+              <p className="text-xs sm:text-sm text-gray-400 mt-2">비교할 프로 스윙을 선택해주세요</p>
             </div>
 
             <button
-              disabled={(!uploaded && !selectedFile) || busy}
+              disabled={(!uploaded && !selectedFile) || busy || !selectedPro}
               onClick={onStart}
-              className="w-full bg-gradient-to-r from-green-500 to-blue-600 hover:from-green-600 hover:to-blue-700 text-white font-semibold py-4 px-6 rounded-2xl shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full bg-gradient-to-r from-green-500 to-blue-600 hover:from-green-600 hover:to-blue-700 text-white font-semibold py-3 sm:py-4 px-4 sm:px-6 text-sm sm:text-base rounded-2xl shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-105"
             >
               {busy ? '분석 중...' : 'AI 분석 시작하기'}
             </button>
