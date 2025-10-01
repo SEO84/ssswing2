@@ -1,4 +1,5 @@
-export const API = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
+// 프로덕션에서는 상대 경로 /api, 개발에서는 localhost:8000
+export const API = process.env.NEXT_PUBLIC_API_BASE_URL || (typeof window !== 'undefined' && window.location.hostname !== 'localhost' ? '/api' : 'http://localhost:8000')
 
 export async function getPresign(input: { filename: string, contentType: string }) {
   const res = await fetch(`${API}/videos/presign`, {
