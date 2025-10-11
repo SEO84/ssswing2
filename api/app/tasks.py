@@ -359,7 +359,7 @@ def run_user_comparison(video1_path: str, video2_path: str, project_root: str) -
         "status": "completed",                                    # 상태: 완료
         "analysisId": an_id,                                      # 분석 ID
         "scores": scores,                                         # 점수 정보
-        "comparisonVideoUrl": f"/download/combined-webm/{an_id}" if use_webm else f"/download/combined/{an_id}",  # 비교 영상 URL
+        "comparisonVideoUrl": f"/api/download/combined-webm/{an_id}" if use_webm else f"/api/download/combined/{an_id}",  # 비교 영상 URL
         "description": "사용자 영상 비교 분석",                    # 설명
         "speedMeta": speed_meta,                                  # 속도 메타데이터
     }
