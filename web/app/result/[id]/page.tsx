@@ -319,7 +319,7 @@ export default function ResultPage() {
         {data.comparisonVideoUrl && (
           <div className="bg-white/10 backdrop-blur-sm rounded-3xl border border-white/20 shadow-xl p-8 mb-8">
             <h3 className="text-xl font-semibold text-white mb-4">🎬 비교 영상 다운로드</h3>
-            <MergeDownload leftSrc={data.assets?.proUrl} rightSrc={data.assets?.userUrl} />
+            <MergeDownload videoUrl={data.comparisonVideoUrl} filename="combined_swing" />
           </div>
         )}
 
