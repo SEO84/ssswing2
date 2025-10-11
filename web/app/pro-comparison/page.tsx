@@ -1,7 +1,7 @@
 "use client"
 import { useEffect, useState } from 'react'
 import { UploadArea } from '@/components/UploadArea'
-import { getTemplates, getPresign, createAnalysis, createAnalysisFromFile, getAnalysis } from '@/lib/api'
+import { getTemplates, getPresign, createAnalysis, createAnalysisFromFile, getAnalysis, API } from '@/lib/api'
 import { useRouter } from 'next/navigation'
 
 interface ProTemplate {
@@ -19,11 +19,14 @@ export default function ProComparisonStartPage() {
   const [loadingTemplates, setLoadingTemplates] = useState(true)
   const [proTemplates, setProTemplates] = useState<ProTemplate[]>([])
   const [selectedPro, setSelectedPro] = useState<string>('')
+  const [templateError, setTemplateError] = useState<string>('')
+  const [lastFetchedAt, setLastFetchedAt] = useState<string>('')
 
   useEffect(() => {
     const fetchTemplates = async () => {
       try {
         setLoadingTemplates(true)
+        setTemplateError('')
         const resp = await getTemplates()
         if (resp?.templates?.length) {
           setProTemplates(resp.templates)
@@ -32,6 +35,9 @@ export default function ProComparisonStartPage() {
         } else {
           setProTemplates([])
         }
+        setLastFetchedAt(new Date().toISOString())
+      } catch (err: any) {
+        setTemplateError(String(err?.message || err))
       } finally {
         setLoadingTemplates(false)
       }
@@ -131,7 +137,12 @@ export default function ProComparisonStartPage() {
               {loadingTemplates ? (
                 <div className="text-xs sm:text-sm text-gray-400">템플릿 로딩 중...</div>
               ) : proTemplates.length === 0 ? (
-                <div className="text-xs sm:text-sm text-red-400">템플릿을 불러올 수 없습니다. S3 연결을 확인하세요.</div>
+                <div className="text-xs sm:text-sm text-red-400 space-y-1">
+                  <div>템플릿을 불러올 수 없습니다. S3 연결을 확인하세요.</div>
+                  <div className="text-[10px] sm:text-xs text-red-300 break-all">에러: {templateError || '없음'}</div>
+                  <div className="text-[10px] sm:text-xs text-gray-400 break-all">API: {API}</div>
+                  <div className="text-[10px] sm:text-xs text-gray-400">fetch 시각: {lastFetchedAt || '미시도'}</div>
+                </div>
               ) : (
                 <>
                   <select
@@ -148,6 +159,13 @@ export default function ProComparisonStartPage() {
                       선택된 템플릿: {proTemplates.find(p => p.id === selectedPro)?.description}
                     </div>
                   )}
+                  <div className="mt-2 space-y-1">
+                    <div className="text-[10px] sm:text-xs text-gray-400 break-all">API: {API}</div>
+                    <div className="text-[10px] sm:text-xs text-gray-400">템플릿 개수: {proTemplates.length}</div>
+                    {lastFetchedAt && (
+                      <div className="text-[10px] sm:text-xs text-gray-400">fetch 시각: {lastFetchedAt}</div>
+                    )}
+                  </div>
                 </>
               )}
               <p className="text-xs sm:text-sm text-gray-400 mt-2">비교할 프로 스윙을 선택해주세요</p>
